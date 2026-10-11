@@ -80,7 +80,8 @@ Extract the downloaded archive into the `sample/` folder inside that task's dire
    | Group | What is tried |
    |---|---|
    | Whitespace | missing/extra `\n`, spaces at the start and end of lines (warning only – the output is expected to match the sample) |
-   | Boundary values | numbers in the input replaced with `INT_MAX`, `INT_MAX+1`, `-0`, `+N`, `000N`, forty 9s, … |
+   | Boundary values | numbers in the input replaced with `INT_MAX`, `INT_MAX+1`, `-0`, `+N`, `000N`, forty 9s, … (for decimal tasks also `1e-300`, `4.9e-324`, `1e309`, `inf`, `nan`, …) |
+   | Decimal numbers | decimal tasks only: every number of a sample multiplied by `1e±6` … `1e±300` (`1.44 + 2.55 = 4` → `0.00000000000144 + 0.00000000000255 = 0.000000000004`) – the output may only change by its numbers being rescaled; a control run at `1e+3` detects tasks where this does not hold (`*`, `/`). Catches absolute epsilons and `%.2f`. Also `1.5` → `1.50`, `15e-1`, `0.15e1` (output must stay the same) |
    | Invalid input | `abc`, `1.23`, `1abc`, `0x1`, empty input, `\0`, UTF-8, `\r\n`, … |
    | Truncated input | EOF at every position |
    | Large input | 1 MB of spaces/zeros/garbage, 100k digits |

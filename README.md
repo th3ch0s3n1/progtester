@@ -80,7 +80,8 @@ Stažený archiv rozbalte do složky `sample/` v adresáři příslušné úlohy
    | Skupina | Co se zkouší |
    |---|---|
    | Bílé znaky | chybějící/přebývající `\n`, mezery na začátku i na konci řádku (jen varování – očekává se stejný výstup jako u vzoru) |
-   | Mezní hodnoty | čísla ve vstupu nahrazena `INT_MAX`, `INT_MAX+1`, `-0`, `+N`, `000N`, 40 devítek, … |
+   | Mezní hodnoty | čísla ve vstupu nahrazena `INT_MAX`, `INT_MAX+1`, `-0`, `+N`, `000N`, 40 devítek, … (u desetinných úloh i `1e-300`, `4.9e-324`, `1e309`, `inf`, `nan`, …) |
+   | Desetinná čísla | jen u úloh s desetinnými čísly: všechna čísla vzoru vynásobená `1e±6` … `1e±300` (`1.44 + 2.55 = 4` → `0.00000000000144 + 0.00000000000255 = 0.000000000004`) – výstup se smí změnit jen tak, že se čísla v něm přeškálují; kontrolní běh s `1e+3` pozná úlohy, kde to neplatí (`*`, `/`). Odhalí absolutní epsilon a `%.2f`. Dále `1.5` → `1.50`, `15e-1`, `0.15e1` (výstup musí zůstat stejný) |
    | Nesprávné vstupy | `abc`, `1.23`, `1abc`, `0x1`, prázdný vstup, `\0`, UTF-8, `\r\n`, … |
    | Useknutý vstup | EOF na každé pozici |
    | Velké vstupy | 1 MB mezer/nul/smetí, 100k číslic |

@@ -3,9 +3,11 @@ ktere plati vzdy (pad, timeout, sanitizery, format vystupu, konzistence
 se vzorovymi vystupy)."""
 
 import difflib
+import math
 import re
 from dataclasses import dataclass, field
 
+from .gen import SCALE_CONTROL
 from .runner import RunResult
 
 FAIL, WARN = "FAIL", "WARN"
@@ -13,8 +15,11 @@ FAIL, WARN = "FAIL", "WARN"
 SAN_MARKERS = (b"ERROR: AddressSanitizer", b"ERROR: LeakSanitizer", b"runtime error:",
                b"AddressSanitizer:DEADLYSIGNAL", b"UndefinedBehaviorSanitizer")
 SAN_INFRA = b"LeakSanitizer has encountered a fatal error"
-# desitkova, desetinna i hexadecimalni cisla (musi obsahovat aspon jednu cifru)
-NUM_PAT = r"[-+]?[0-9A-Fa-f]*\d[0-9A-Fa-f]*(?:\.\d+)?"
+# desitkova, desetinna (i s exponentem) a hexadecimalni cisla (musi obsahovat aspon jednu cifru)
+NUM_PAT = r"[-+]?[0-9A-Fa-f]*\d[0-9A-Fa-f]*(?:\.\d+)?(?:[eE][-+]?\d+)?"
+# cisla ve vystupu tak, jak je tiskne printf (%g, %f, %e, inf, nan)
+VAL_RE = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|(?<![A-Za-z])[-+]?(?:inf|nan)(?![A-Za-z])",
+                    re.IGNORECASE)
 
 
 @dataclass
@@ -85,8 +90,60 @@ def _crash(r: RunResult, label: str, v: Verdict, timeout: float):
         v.add(FAIL, f"[{label}] program spadl: {r.signal_name}")
 
 
+def _scaled_ok(x: float, y: float, jk: int) -> bool:
+    """Je y = x * 10^jk (na ~6 platnych cifer, jak tiskne %g)?"""
+    if x == 0 or not math.isfinite(x):
+        return y == x or (math.isnan(x) and math.isnan(y))
+    return (y != 0 and math.isfinite(y) and (x > 0) == (y > 0)
+            and abs(math.log10(abs(y)) - math.log10(abs(x)) - jk) <= 1e-4)
+
+
+def _learn_powers(base: bytes, out: bytes, k: int) -> list[int] | None:
+    """Pro kazde cislo ve vystupu urci j (0 bezrozmerne, 1 delka, 2 plocha, 3 objem) tak,
+    aby `out` byl `base` s cisly * 10^(j*k). None, kdyz takove j neexistuje."""
+    b, o = base.decode("utf-8", "replace"), out.decode("utf-8", "replace")
+    if VAL_RE.sub("#", b) != VAL_RE.sub("#", o):
+        return None
+    js = []
+    for xs, ys in zip(VAL_RE.findall(b), VAL_RE.findall(o)):
+        j = next((j for j in range(4) if _scaled_ok(float(xs), float(ys), j * k)), None)
+        if j is None:
+            return None
+        js.append(j)
+    return js
+
+
+def _check_scale(case, out: bytes, ctrl: RunResult | None, v: Verdict):
+    if ctrl is None or ctrl.timed_out or ctrl.signal_name:
+        return
+    js = _learn_powers(case.base, ctrl.stdout, SCALE_CONTROL)
+    if js is None:
+        return  # uz pri malem posunu se chovani meni -> uloha na meritku zavisi (napr. *, /)
+    b = case.base.decode("utf-8", "replace")
+    nums = [float(x) for x in VAL_RE.findall(b)]
+    if any(x != 0 and math.isfinite(x) and not -307 < math.log10(abs(x)) + j * case.scale < 308
+           for x, j in zip(nums, js)):
+        return  # vysledek by byl mimo rozsah double - tam se nic zarucit neda
+    o = out.decode("utf-8", "replace")
+    if VAL_RE.sub("#", b) != VAL_RE.sub("#", o):
+        why = "zmenil se text"
+        hint = ("nejspis porovnavas s absolutnim epsilonem (fabs(a - b) < 1e-9) - pouzij relativni, "
+                "napr. fabs(a - b) <= 1e-12 * fmax(fabs(a), fabs(b))")
+    else:
+        bad = next(((xs, ys) for xs, ys, j in zip(VAL_RE.findall(b), VAL_RE.findall(o), js)
+                    if not _scaled_ok(float(xs), float(ys), j * case.scale)), None)
+        if bad is None:
+            return
+        why = f"cislo {bad[0]} se zmenilo na {bad[1]}"
+        hint = ("vypocet ztraci presnost - oriznuti/zaokrouhleni bez tolerance (trunc, floor, (int)), "
+                "vypis s pevnym poctem mist (%.2f) misto %g, ...")
+    v.add(WARN, f"po vynasobeni vsech cisel 1e{case.scale:+d} se vystup zmenil ({why}), "
+                f"pri 1e{SCALE_CONTROL:+d} ne -> {hint}\n"
+                f"vystup vzoru {case.origin}: {case.base.decode('utf-8', 'replace')!r}")
+
+
 def evaluate(case, rel: RunResult, san: RunResult | None, ref: RunResult | None,
-             oracle: Oracle, timeout: float) -> Verdict:
+             oracle: Oracle, timeout: float, ctrl: RunResult | None = None) -> Verdict:
     v = Verdict()
     _crash(rel, "-O2", v, timeout)
 
@@ -113,11 +170,13 @@ def evaluate(case, rel: RunResult, san: RunResult | None, ref: RunResult | None,
 
     if case.expected is not None and out != case.expected:
         lvl = WARN if case.expected_soft else FAIL
-        why = (" (stejny obsah jako vzor " + case.origin + ", lisi se jen bile znaky)"
+        why = (f" ({case.note or f'stejny obsah jako vzor {case.origin}, lisi se jen bile znaky'})"
                if case.expected_soft else "")
         v.add(lvl, "vystup neodpovida ocekavanemu" + why)
     if ref is not None and not ref.timed_out and not ref.signal_name and out != ref.stdout:
         v.add(FAIL, "vystup se lisi od referencniho programu (--ref)")
+    if case.scale and case.base is not None:
+        _check_scale(case, out, ctrl, v)
 
     if not out:
         v.add(FAIL, "prazdny vystup")

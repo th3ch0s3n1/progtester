@@ -7,18 +7,25 @@ nahrazuje meznimi hodnotami, usekava je, mutuje) a z obecne zakernych vstupu.
 import random
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 
 G_SAMPLE = "Zakladni test (vzorova data)"
 G_WS = "Test bilych znaku a konce radku"
 G_BOUND = "Test meznich hodnot"
+G_FLOAT = "Test desetinnych cisel (presnost a meritko)"
 G_INVALID = "Test osetreni nespravnych vstupu"
 G_EOF = "Test useknuteho vstupu (EOF)"
 G_BIG = "Test velkych vstupu"
 G_FUZZ = "Nahodny test (fuzz)"
-GROUPS = [G_SAMPLE, G_WS, G_BOUND, G_INVALID, G_EOF, G_BIG, G_FUZZ]
+GROUPS = [G_SAMPLE, G_WS, G_BOUND, G_FLOAT, G_INVALID, G_EOF, G_BIG, G_FUZZ]
 
-NUM_RE = re.compile(rb"[-+]?\d+(?:\.\d+)?")
+NUM_RE = re.compile(rb"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
+ERROR_RE = re.compile(rb"Nespravny vstup|Invalid input", re.IGNORECASE)
+
+# vsechna cisla ve vzorovem vstupu se vynasobi 10^k (jako progtest: 0.000001 + 0.000002 = 0.000003)
+SCALES = (-300, -20, -12, -9, -6, 6, 9, 12, 20, 300)
+SCALE_CONTROL = 3  # kontrolni posun - kdyz nesedi uz ten, uloha na meritku zavisi a nic netvrdime
 
 
 @dataclass
@@ -30,6 +37,10 @@ class Case:
     expected_soft: bool = False     # neshoda = varovani, ne chyba
     note: str = ""
     origin: str = field(default="", repr=False)
+    # test meritka: vstup = vzor s cisly * 10^scale, base = vystup vzoru, control = vzor * 10^SCALE_CONTROL
+    scale: int = 0
+    base: bytes | None = field(default=None, repr=False)
+    control: bytes | None = field(default=None, repr=False)
 
 
 LANGS = ("CZE", "ENG")
@@ -60,12 +71,19 @@ def load_samples(task: Path, lang: str = "CZE") -> list[Case]:
     return cases
 
 
-def _boundary_values(tok: bytes) -> list[bytes]:
+FLOAT_BOUNDS = [b"0.000001", b"-0.0", b"0.1", b"0.30000000000000004", b"1e-300",
+                b"4.9e-324", b"2.2250738585072014e-308", b"1.7976931348623157e308",
+                b"1e308", b"1e309", b"-1e309", b"1e-400", b"inf", b"-inf", b"nan", b"0." + b"0" * 400 + b"1"]
+
+
+def _boundary_values(tok: bytes, floats: bool) -> list[bytes]:
     vals = [b"0", b"-0", b"+0", b"1", b"-1",
             b"2147483647", b"-2147483648", b"2147483648", b"-2147483649",
             b"4294967295", b"4294967296",
             b"9223372036854775807", b"-9223372036854775808", b"9223372036854775808",
             b"18446744073709551616", b"9" * 40, b"-" + b"9" * 40]
+    if floats:
+        vals += FLOAT_BOUNDS
     try:
         n = int(tok)
     except ValueError:
@@ -83,7 +101,33 @@ GENERIC_INVALID = [
     b"+-1\n", b"- 1\n", b"1e3\n", b"0x1\n", b"1 2\n", b"1\r\n", b"\r\n",
     b"\x00\n", b"1\x00\n", b"\xff\xfe\n", b"\xef\xbc\x91\n",  # fullwidth 1
     b"\xc3\xa1\n", b"%d%s%n\n", b"'\"\\\n", b"\x1b[31m1\n", b"\x04", b"\x1a\n",
+    b"nan\n", b"inf\n", b"-inf\n", b"1e999\n",
 ]
+
+
+def _is_decimal(tok: bytes) -> bool:
+    return any(ch in tok for ch in b".eE")
+
+
+def _shift(tok: bytes, k: int) -> bytes:
+    """Presne posune desetinnou carku (bez zaokrouhleni pres double)."""
+    d = Decimal(tok.decode()).scaleb(k)
+    if d == 0:
+        return tok
+    return format(d.normalize(), "f" if abs(k) <= 20 else "e").encode()
+
+
+def _scaled(data: bytes, k: int) -> bytes:
+    return NUM_RE.sub(lambda m: _shift(m.group(), k), data)
+
+
+def _respell(tok: bytes) -> list[bytes]:
+    """Stejna hodnota, jiny zapis: 1.5 -> 1.50, 15e-1, 0.15e1."""
+    d = Decimal(tok.decode())
+    plain = format(d, "f")
+    return [(plain + "0" if "." in plain else plain + ".0").encode(),
+            (format(d.scaleb(1), "f") + "e-1").encode(),
+            (format(d.scaleb(-1), "f") + "e1").encode()]
 
 
 def _whitespace_variants(data: bytes) -> list[tuple[str, bytes]]:
@@ -139,13 +183,34 @@ def generate(samples: list[Case], fuzz: int, seed: int, big: bool) -> list[Case]
         for desc, d in _whitespace_variants(s.data):
             add(G_WS, f"{s.name}: {desc}", d, expected=s.expected, expected_soft=True, origin=s.name)
 
+    # uloha s desetinnymi cisly? (u celociselnych by 0.000001 byl jen nespravny vstup)
+    # vzory s chybovou hlaskou se nepocitaji - "12.5" v nich muze byt prave ten nespravny vstup
+    valid = [s for s in samples if not ERROR_RE.search(s.expected or b"")]
+    floats = any(_is_decimal(m.group()) for s in valid for m in NUM_RE.finditer(s.data))
+
     # 2) mezni hodnoty - kazde cislo ve vzorovem vstupu postupne nahradime
     for s in samples:
         matches = list(NUM_RE.finditer(s.data))[:8]
         for m in matches:
-            for v in _boundary_values(m.group()):
+            for v in _boundary_values(m.group(), floats):
                 d = s.data[:m.start()] + v + s.data[m.end():]
                 add(G_BOUND, f"{s.name}: {m.group().decode()} -> {v[:24].decode()}", d, origin=s.name)
+
+    # 2b) desetinna cisla - zmena meritka a jiny zapis tehoz cisla
+    if floats:
+        for s in valid:
+            if not NUM_RE.search(s.data):
+                continue
+            control = _scaled(s.data, SCALE_CONTROL)
+            for k in SCALES:
+                add(G_FLOAT, f"{s.name}: vsechna cisla * 1e{k:+d}", _scaled(s.data, k), origin=s.name,
+                    scale=k, base=s.expected, control=control)
+            for m in list(NUM_RE.finditer(s.data))[:4]:
+                for v in _respell(m.group()):
+                    add(G_FLOAT, f"{s.name}: {m.group().decode()} -> {v.decode()}",
+                        s.data[:m.start()] + v + s.data[m.end():], expected=s.expected,
+                        expected_soft=True, origin=s.name,
+                        note=f"stejna hodnota jako ve vzoru {s.name}, jen jiny zapis cisla")
 
     # 3) nespravne vstupy
     for d in GENERIC_INVALID:

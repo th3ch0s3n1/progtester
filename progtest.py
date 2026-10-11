@@ -89,7 +89,8 @@ def run_case(case, rel_bin, san_bin, ref_bin, oracle, args):
     san = (run(san_bin, case.data, args.timeout * 5, None, build.asan_env())
            if san_bin else None)
     ref = run(ref_bin, case.data, args.timeout * 5) if ref_bin else None
-    return case, rel, evaluate(case, rel, san, ref, oracle, args.timeout)
+    ctrl = run(rel_bin, case.control, args.timeout, args.mem) if case.control is not None else None
+    return case, rel, evaluate(case, rel, san, ref, oracle, args.timeout, ctrl)
 
 
 def save_failure(outdir: Path, idx: int, case, rel, verdict):
