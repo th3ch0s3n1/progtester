@@ -15,8 +15,9 @@ FAIL, WARN = "FAIL", "WARN"
 SAN_MARKERS = (b"ERROR: AddressSanitizer", b"ERROR: LeakSanitizer", b"runtime error:",
                b"AddressSanitizer:DEADLYSIGNAL", b"UndefinedBehaviorSanitizer")
 SAN_INFRA = b"LeakSanitizer has encountered a fatal error"
-# desitkova, desetinna (i s exponentem) a hexadecimalni cisla (musi obsahovat aspon jednu cifru)
-NUM_PAT = r"[-+]?[0-9A-Fa-f]*\d[0-9A-Fa-f]*(?:\.\d+)?(?:[eE][-+]?\d+)?"
+# desitkova, desetinna (i s exponentem) a hexadecimalni cisla (musi obsahovat aspon jednu cifru);
+# pred prvni cifrou jen pismena, aby slo cislo rozdelit jedinym zpusobem (jinak exponencialni backtracking)
+NUM_PAT = r"[-+]?[A-Fa-f]*\d[0-9A-Fa-f]*(?:\.\d+)?(?:[eE][-+]?\d+)?"
 # cisla ve vystupu tak, jak je tiskne printf (%g, %f, %e, inf, nan)
 VAL_RE = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|(?<![A-Za-z])[-+]?(?:inf|nan)(?![A-Za-z])",
                     re.IGNORECASE)
