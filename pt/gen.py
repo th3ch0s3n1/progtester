@@ -11,6 +11,10 @@ from decimal import Decimal
 from pathlib import Path
 
 G_SAMPLE = "Zakladni test (vzorova data)"
+G_EXTRA = "Nepovinny test (vzorova data extra)"
+G_BONUS = "Bonusovy test (vzorova data {})"
+G_SUITE = "Vzorova data {}"
+G_OWN = "Vlastni testy (tests/)"
 G_WS = "Test bilych znaku a konce radku"
 G_BOUND = "Test meznich hodnot"
 G_FLOAT = "Test desetinnych cisel (presnost a meritko)"
@@ -18,7 +22,7 @@ G_INVALID = "Test osetreni nespravnych vstupu"
 G_EOF = "Test useknuteho vstupu (EOF)"
 G_BIG = "Test velkych vstupu"
 G_FUZZ = "Nahodny test (fuzz)"
-GROUPS = [G_SAMPLE, G_WS, G_BOUND, G_FLOAT, G_INVALID, G_EOF, G_BIG, G_FUZZ]
+GENERATED = [G_WS, G_BOUND, G_FLOAT, G_INVALID, G_EOF, G_BIG, G_FUZZ]
 
 NUM_RE = re.compile(rb"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
 ERROR_RE = re.compile(rb"Nespravny vstup|Invalid input", re.IGNORECASE)
@@ -41,15 +45,37 @@ class Case:
     scale: int = 0
     base: bytes | None = field(default=None, repr=False)
     control: bytes | None = field(default=None, repr=False)
+    suite: str = ""                 # sada vzorovych dat (basic, extra, ...), "" = generovany vstup
 
 
 LANGS = ("CZE", "ENG")
+
+
+def sample_group(sub: str, parts: tuple) -> tuple[str, str]:
+    """(sada, skupina) podle cesty souboru: sample/basic/CZE/0000_in.txt -> basic (povinne testy).
+
+    Progtest u nekterych uloh dava vzorova data rozdelena na sady: basic = povinne testy,
+    extra = nepovinny test (typicky dlouhe vstupy, pozna pomaly algoritmus), bonus* = bonusy.
+    """
+    if sub == "tests":
+        return "tests", G_OWN
+    dirs = [p for p in parts[:-1] if p not in LANGS]
+    suite = dirs[0] if dirs else ""
+    low = suite.lower()
+    if low in ("", "basic", "base", "zaklad", "mandatory"):
+        return suite or "basic", G_SAMPLE
+    if low in ("extra", "optional", "nepovinne"):
+        return suite, G_EXTRA
+    if low.startswith("bonus"):
+        return suite, G_BONUS.format(suite)
+    return suite, G_SUITE.format(suite)
 
 
 def load_samples(task: Path, lang: str = "CZE") -> list[Case]:
     """Vsechny *_in.txt + *_out.txt z <uloha>/sample/** a <uloha>/tests/** (bez duplicit).
 
     Soubory ve slozce jineho jazyka (CZE/ENG) se preskoci; lang="all" bere vse.
+    Podslozky sample/ (basic, extra, bonus, ...) tvori samostatne sady.
     """
     cases, seen = [], set()
     for sub in ("sample", "tests"):
@@ -67,7 +93,8 @@ def load_samples(task: Path, lang: str = "CZE") -> list[Case]:
             if (data, out) in seen:
                 continue
             seen.add((data, out))
-            cases.append(Case(str(fin.relative_to(task)), G_SAMPLE, data, out))
+            suite, group = sample_group(sub, parts)
+            cases.append(Case(str(fin.relative_to(task)), group, data, out, suite=suite))
     return cases
 
 

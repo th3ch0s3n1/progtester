@@ -55,6 +55,18 @@ def build_sanitized(src: Path, outdir: Path, cc: str) -> Build:
     return compile_src(src, outdir / "prog_asan", SANITIZE, cc)
 
 
+def build_debug(src: Path, outdir: Path, cc: str) -> Build:
+    """Build pro valgrind - bez sanitizeru (s ASan valgrind nefunguje), s ladicimi informacemi."""
+    return compile_src(src, outdir / "prog_debug", ["-O0", "-g"], cc)
+
+
+def valgrind_cmd(binary: Path, log: Path) -> list:
+    # hlaseni jde do souboru, aby se nemichalo se stderr programu
+    return ["valgrind", "--tool=memcheck", "-q", "--error-exitcode=88", "--track-origins=yes",
+            "--leak-check=full", "--show-leak-kinds=definite,indirect",
+            "--errors-for-leak-kinds=definite,indirect", f"--log-file={log}", str(binary)]
+
+
 def forbidden_symbols(binary: Path) -> list:
     if not shutil.which("nm"):
         return []

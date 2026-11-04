@@ -76,6 +76,22 @@ def _san_report(stderr: bytes) -> str:
     return "\n".join(keep[:8]) or stderr.decode("utf-8", "replace")[:600]
 
 
+def valgrind_report(log: str) -> str:
+    """Zkrati hlaseni valgrindu: druh chyby + ramce z kodu studenta."""
+    keep = []
+    for ln in log.splitlines():
+        ln = re.sub(r"^==\d+==\s?", "", ln).strip()
+        if not ln:
+            continue
+        ln = re.sub(r"0x[0-9A-Fa-f]+: ", "", ln)
+        if re.match(r"(at|by) ", ln):
+            if re.search(r"\(\S+\.(c|cpp|cc|h):\d+\)", ln):
+                keep.append("  " + ln)
+        elif not ln.startswith(("Address 0x", "Block was alloc'd at")) or len(keep) < 10:
+            keep.append(ln)
+    return "\n".join(keep[:14]) or log[:600]
+
+
 def has_sanitizer_error(r: RunResult) -> bool:
     return any(m in r.stderr for m in SAN_MARKERS) and SAN_INFRA not in r.stderr
 
@@ -143,10 +159,24 @@ def _check_scale(case, out: bytes, ctrl: RunResult | None, v: Verdict):
                 f"vystup vzoru {case.origin}: {case.base.decode('utf-8', 'replace')!r}")
 
 
+def _eof_hint(expected: bytes, out: bytes) -> str:
+    """Spravny vystup + chybova hlaska navic na konci = program bere konec vstupu (EOF) jako chybu."""
+    from .gen import ERROR_RE
+    extra = out[len(expected):] if out.startswith(expected) else b""
+    if extra.count(b"\n") <= 1 and ERROR_RE.search(extra) and not ERROR_RE.search(expected):
+        return ("\nvse spravne, jen na konci navic chybova hlaska -> program bere konec vstupu (EOF) jako "
+                "chybu. scanf na konci vstupu vraci EOF - to neni nespravny vstup, program ma skoncit. "
+                "(Pri rucnim zkouseni konec vstupu posles Ctrl+D, jinak program jen ceka.)")
+    return ""
+
+
 def evaluate(case, rel: RunResult, san: RunResult | None, ref: RunResult | None,
-             oracle: Oracle, timeout: float, ctrl: RunResult | None = None) -> Verdict:
+             oracle: Oracle, timeout: float, ctrl: RunResult | None = None,
+             vg_log: str | None = None) -> Verdict:
     v = Verdict()
     _crash(rel, "-O2", v, timeout)
+    if vg_log:
+        v.add(FAIL, "[valgrind] " + valgrind_report(vg_log))
 
     if san is not None:
         if has_sanitizer_error(san):
@@ -157,14 +187,15 @@ def evaluate(case, rel: RunResult, san: RunResult | None, ref: RunResult | None,
                  and not san.signal_name and not has_sanitizer_error(san))
         if clean and rel.stdout != san.stdout:
             v.add(FAIL, "vystup -O2 a -O0 buildu se lisi -> nedefinovane chovani "
-                        "(neinicializovana promenna, cteni mimo pole, ...)")
+                        "(neinicializovana promenna, cteni mimo pole, ...); presne misto ukaze --valgrind")
 
     if rel.timed_out or rel.signal_name:
         return v
 
     out = rel.stdout
-    if rel.duration > timeout * 0.5:
-        v.add(WARN, f"beh trval {rel.duration:.2f} s (vic nez pulka limitu)")
+    # CPU cas - realny cas zkresluje paralelni beh testu (-j)
+    if rel.cpu > timeout * 0.5:
+        v.add(WARN, f"beh trval {rel.cpu:.2f} s CPU (vic nez pulka limitu)")
     if rel.stderr.strip():
         v.add(WARN, "program neco vypsal na stderr (progtest kontroluje jen stdout): "
                     + repr(rel.stderr[:120].decode("utf-8", "replace")))
@@ -173,7 +204,7 @@ def evaluate(case, rel: RunResult, san: RunResult | None, ref: RunResult | None,
         lvl = WARN if case.expected_soft else FAIL
         why = (f" ({case.note or f'stejny obsah jako vzor {case.origin}, lisi se jen bile znaky'})"
                if case.expected_soft else "")
-        v.add(lvl, "vystup neodpovida ocekavanemu" + why)
+        v.add(lvl, "vystup neodpovida ocekavanemu" + why + _eof_hint(case.expected, out))
     if ref is not None and not ref.timed_out and not ref.signal_name and out != ref.stdout:
         v.add(FAIL, "vystup se lisi od referencniho programu (--ref)")
     if case.scale and case.base is not None:
