@@ -367,7 +367,7 @@ Reproduce with: `./a.out < progtester/vysledky/01_task/0003_fail_in.txt`
 | `--cc g++\|gcc` | `g++` | compiler (`gcc` = compile as C) |
 | `--ref BIN` | | reference binary – exact comparison of all outputs |
 | `--show N` | `3` | how many details to print per group |
-| `--out DIR` | `vysledky/<task>` | where to save problematic inputs |
+| `--out DIR` | `vysledky/<task>` | where to save problematic inputs (emptied at start; refuses an existing non-empty directory the tester did not create) |
 | `-j N` | CPU count | number of parallel jobs |
 | `--src FILE` | | a specific source file when the folder has several |
 

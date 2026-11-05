@@ -369,7 +369,7 @@ Reprodukce: `./a.out < progtester/vysledky/01_uloha/0003_fail_in.txt`
 | `--cc g++\|gcc` | `g++` | překladač (`gcc` = překlad jako C) |
 | `--ref BIN` | | referenční binárka – přesné porovnání všech výstupů |
 | `--show N` | `3` | kolik detailů vypsat na skupinu |
-| `--out SLOŽKA` | `vysledky/<úloha>` | kam uložit problémové vstupy |
+| `--out SLOŽKA` | `vysledky/<úloha>` | kam uložit problémové vstupy (složka se na začátku vyprázdní; existující neprázdnou složku, kterou nevytvořil tester, odmítne) |
 | `-j N` | počet jader | počet paralelních úloh |
 | `--src SOUBOR` | | konkrétní zdrojový soubor, když jich je ve složce víc |
 

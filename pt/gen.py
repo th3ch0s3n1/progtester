@@ -269,8 +269,9 @@ def generate(samples: list[Case], fuzz: int, seed: int, big: bool) -> list[Case]
 
     # 6) fuzz
     if samples:
+        before = len(cases)
         for i in range(fuzz * 4):
-            if sum(c.group == G_FUZZ for c in cases) >= fuzz:
+            if len(cases) - before >= fuzz:  # add() duplicity zahodi, proto ne range(fuzz)
                 break
             s = rng.choice(samples)
             add(G_FUZZ, f"#{i} z {s.name}", _mutate(rng, s.data), origin=s.name)

@@ -477,6 +477,23 @@ def run_function_tests(src: Path, wd: Path, args) -> FuncResult:
     return res
 
 
+OUT_MARKER = ".progtester_vysledky"  # slozku s timhle souborem vytvoril tester a smi ji smazat
+
+
+def prepare_outdir(outdir: Path, own: bool):
+    """Vycisti slozku na vysledky. Slozku z --out smaze jen, kdyz je prazdna nebo ji vytvoril
+    tester - preklep jako `--out 01_uloha` nesmi smazat reseni."""
+    if outdir.exists():
+        if not outdir.is_dir():
+            raise SystemExit(f"--out {outdir}: neni slozka.")
+        if not (own or (outdir / OUT_MARKER).exists() or not any(outdir.iterdir())):
+            raise SystemExit(f"Slozka {outdir} uz existuje a nevytvoril ji tester - nemazu ji. "
+                             f"Zvol pro --out novou nebo prazdnou slozku.")
+        shutil.rmtree(outdir, ignore_errors=True)
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / OUT_MARKER).touch()
+
+
 def main():
     args = parse_args()
     task = Path(args.task).resolve()
@@ -485,8 +502,7 @@ def main():
     cx_spec = find_complexity(task_dir, args)
 
     outdir = Path(args.out).resolve() if args.out else TESTER_DIR / "vysledky" / task_dir.name
-    shutil.rmtree(outdir, ignore_errors=True)
-    outdir.mkdir(parents=True)
+    prepare_outdir(outdir, own=not args.out)
 
     with tempfile.TemporaryDirectory(prefix="progtest_") as wd:
         comp = compile_all(src, Path(wd), args)

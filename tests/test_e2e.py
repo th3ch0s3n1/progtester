@@ -157,3 +157,28 @@ class FunctionTask(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OutDir(unittest.TestCase):
+    def run_with_out(self, out: Path) -> subprocess.CompletedProcess:
+        env = dict(os.environ, NO_COLOR="1", PYTHONDONTWRITEBYTECODE="1")
+        return subprocess.run([sys.executable, str(ROOT / "progtest.py"), str(IO), "--src", str(IO / "ok.c"),
+                               "--out", str(out), "--only-style"], capture_output=True, text=True,
+                              timeout=120, env=env)
+
+    def test_foreign_dir_is_not_deleted(self):
+        with tempfile.TemporaryDirectory(prefix="pt_e2e_") as d:
+            keep = Path(d) / "reseni.c"
+            keep.write_text("int main(void) { return 0; }\n")
+            p = self.run_with_out(Path(d))
+            self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertIn("nevytvoril ji tester", p.stderr)
+            self.assertTrue(keep.exists())
+
+    def test_own_dir_is_reused(self):
+        with tempfile.TemporaryDirectory(prefix="pt_e2e_") as d:
+            out = Path(d) / "vysledky"
+            for _ in range(2):  # podruhe uz slozka existuje, ale ma znacku testeru
+                p = self.run_with_out(out)
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertTrue((out / ".progtester_vysledky").exists())
