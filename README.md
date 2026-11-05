@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧪 progtester
+# progtester
 
 **Lokální simulátor Progtestu, který se snaží váš program rozbít.**
 
@@ -14,129 +14,234 @@
 
 ---
 
-Přeloží program podobně jako Progtest, pustí na něj vzorová data a pak ho zkusí rozbít.
-Tester **nezná řešení žádné úlohy** – u generovaných vstupů kontroluje jen věci, které platí vždy.
+progtester přeloží vaše řešení stejně jako Progtest, pustí na něj vzorová data ze zadání a potom ho
+zkouší rozbít tisíci odvozených vstupů: mezními hodnotami, nesprávným vstupem, useknutým vstupem,
+obřími vstupy a náhodnými mutacemi. Hledá pády, paměťové chyby, nedefinované chování a příliš pomalý
+algoritmus a oznámkuje i čitelnost kódu.
 
-```sh
-python3 progtester/progtest.py 01_uloha                 # plný test
-python3 progtester/progtest.py 01_uloha --only-samples  # jen vzorová data
-python3 progtester/progtest.py 01_uloha --fuzz 2000 --seed 42 --show 10
-python3 progtester/progtest.py 01_uloha --valgrind      # + kontrola pod valgrindem
-python3 progtester/progtest.py 01_uloha --only-complexity  # jen odhad složitosti
-```
+Tester **nezná řešení žádné úlohy**. U vstupů, ke kterým nemá očekávaný výstup, kontroluje jen to, co
+musí platit vždy (program nespadne, nepíše mimo pole, výstup má správný tvar, …).
 
-## 📑 Obsah
+## Obsah
 
-- [Instalace](#-instalace)
-- [Co dělá](#-co-dělá)
-- [Co se kontroluje u vstupů bez známého výstupu](#-co-se-kontroluje-u-vstupů-bez-známého-výstupu)
-- [Úlohy „napište funkci“](#-úlohy-napište-funkci)
-- [Štábní kultura kódu](#-štábní-kultura-kódu)
-- [Valgrind](#-valgrind)
-- [Odhad složitosti](#-odhad-složitosti)
-- [Vlastní testy](#-vlastní-testy)
-- [Výsledky](#-výsledky)
-- [Přepínače](#%EF%B8%8F-přepínače)
-- [Testy testeru](#-testy-testeru)
+- [Rychlý start](#rychlý-start)
+- [Co tester dělá](#co-tester-dělá)
+- [Jak číst výsledky](#jak-číst-výsledky)
+- [Překlad](#překlad)
+- [Vzorová data](#vzorová-data)
+- [Rozbíjecí testy](#rozbíjecí-testy)
+- [Paměťové chyby: ASan, UBSan a valgrind](#paměťové-chyby-asan-ubsan-a-valgrind)
+- [Úlohy „napište funkci“](#úlohy-napište-funkci)
+- [Štábní kultura kódu](#štábní-kultura-kódu)
+- [Odhad časové složitosti](#odhad-časové-složitosti)
+- [Vlastní testy a generátory](#vlastní-testy-a-generátory)
+- [Přepínače](#přepínače)
+- [Vývoj testeru](#vývoj-testeru)
 
-## 📦 Instalace
+## Rychlý start
 
-Nic se neinstaluje. Stačí `python3` (≥ 3.10) a `g++`. Pro `--valgrind` je potřeba `valgrind` (`apt install valgrind`), kontrolu kódu rozšíří `cppcheck` a `clang-tidy`.
+Potřebujete Linux (na Windows WSL), `python3` ≥ 3.10 a `g++`. Nic dalšího se neinstaluje.
+Nepovinně: `valgrind` pro `--valgrind`, `cppcheck` a `clang-tidy` pro podrobnější kontrolu kódu
+(`sudo apt install valgrind cppcheck clang-tidy`).
 
 ```sh
 git clone https://github.com/th3ch0s3n1/progtester.git
 ```
 
-Složku `progtester` umístěte vedle složek s úlohami. **Každá úloha musí mít vlastní složku** – v ní leží zdrojový kód řešení a vzorová data:
+Složku `progtester` dejte vedle složek s úlohami. Každá úloha má vlastní složku se zdrojovým kódem
+a vzorovými daty:
 
 ```
 .
 ├── progtester/
-│   └── progtest.py
-├── 01_uloha/             ← jedna úloha = jedna složka
-│   ├── main.cpp          ← vaše řešení
+├── 01_uloha/
+│   ├── main.c            ← vaše řešení
 │   └── sample/           ← vzorová data z Progtestu
 │       ├── CZE/
 │       └── ENG/
-├── 02_dalsi_uloha/
-│   ├── main.cpp
-│   └── sample/
-└── ...
+└── 02_dalsi_uloha/
+    └── ...
 ```
 
-### 📥 Vzorová data
-
-Tester vzorová data nezná, musíte je **stáhnout ze stránky úlohy na Progtestu** (tlačítko **Download** u řádku „Vzorová data“):
+Vzorová data stáhněte na stránce úlohy na Progtestu tlačítkem **Download** u řádku „Vzorová data“
+a rozbalte je do `sample/`:
 
 ![Tlačítko Download u vzorových dat na Progtestu](vzorova_data.png)
 
-Stažený archiv rozbalte do složky `sample/` v adresáři příslušné úlohy (viz strom výše).
+Potom stačí tester spustit:
 
-Některé úlohy mají vzorová data rozdělená na **sady** – `sample/basic/{CZE,ENG}` (povinné testy)
-a `sample/extra/{CZE,ENG}` (nepovinný test, typicky dlouhé vstupy, na kterých neprojde pomalý algoritmus).
-Tester je pozná sám a vypíše každou sadu zvlášť:
+```sh
+python3 progtester/progtest.py 01_uloha                    # všechno
+python3 progtester/progtest.py 01_uloha --only-samples     # jen vzorová data, rychle
+python3 progtester/progtest.py 01_uloha --valgrind         # navíc kontrola pod valgrindem
+python3 progtester/progtest.py 01_uloha --only-complexity  # jen odhad složitosti
+```
+
+Pokud je ve složce víc zdrojových souborů, tester vezme `program.c`, `main.c`, `program.cpp` nebo
+`main.cpp`; jinak ho určete přes `--src`. Místo složky můžete předat rovnou cestu ke zdrojovému souboru.
+
+## Co tester dělá
+
+Jeden běh projde tyto kroky:
+
+1. **[Překlad](#překlad)** stejnými přepínači jako Progtest a kontrola zakázaných funkcí.
+2. **[Štábní kultura kódu](#štábní-kultura-kódu)**: délka a složitost funkcí, globální proměnné,
+   magická čísla, … a známka 1–5.
+3. **[Vzorová data](#vzorová-data)**: výstup se porovná se vzorem bajt po bajtu.
+4. **[Rozbíjecí testy](#rozbíjecí-testy)**: vstupy odvozené od vzorů. Každý vstup běží v několika
+   buildech (`-O2`, ASan/UBSan, případně valgrind), aby se ukázaly i
+   [paměťové chyby](#paměťové-chyby-asan-ubsan-a-valgrind).
+5. **[Odhad časové složitosti](#odhad-časové-složitosti)**: tester vzorové vstupy zvětšuje, měří čas
+   a odhadne, jestli program stihne limit i na velkých datech.
+
+U [úloh „napište funkci“](#úlohy-napište-funkci), kde se odevzdává jen funkce, se místo kroků 3–5
+spustí testovací `main()` ze zadání.
+
+## Jak číst výsledky
+
+Každý test skončí jako **OK**, **WARN** nebo **FAIL**:
+
+- **FAIL** je chyba, kvůli které by Progtest test nejspíš neuznal: špatný výstup, pád, timeout,
+  paměťová chyba, nedefinované chování.
+- **WARN** je podezřelé, ale nemusí to být chyba: neznámý řádek ve výstupu, výpis na stderr, běh
+  nad polovinu časového limitu.
+
+Na konci je shrnutí za každou sadu vzorových dat, známka za styl a za složitost. U každé skupiny testů
+se vypíšou první tři problémy (`--show N` jich ukáže víc) i s rozdílem proti očekávanému výstupu:
 
 ```
-FAIL Zakladni test (vzorova data): 4/8 OK, 4 chyb
-FAIL Nepovinny test (vzorova data extra): 0/11 OK, 11 chyb
-...
+FAIL Zakladni test (vzorova data): 1/4 OK, 3 chyb
+   FAIL sample/CZE/0000_in.txt
+        vstup:  1 2 3\n
+        vystup: Zadejte cisla:\nSoucet: 1\nSoucet: 3\nSoucet: 6\nNespravny vstup.\n
+        - vystup neodpovida ocekavanemu
+          vse spravne, jen na konci navic chybova hlaska -> program bere konec vstupu (EOF) jako chybu. ...
+          --- ocekavano
+          +++ dostal
+          @@ -3,2 +3,3 @@
+           Soucet: 3\n
+           Soucet: 6\n
+          +Nespravny vstup.\n
+        ulozeno: 0001_fail_*.txt
+```
+
+Všechny problémové vstupy se ukládají do `progtester/vysledky/<úloha>/` (jinam přes `--out`):
+
+| Soubor | Obsah |
+|---|---|
+| `0001_fail_in.txt` | vstup |
+| `0001_fail_out.txt` | výstup vašeho programu |
+| `0001_fail_ref.txt` | očekávaný výstup, pokud je znám |
+| `0001_fail_info.txt` | co bylo špatně |
+
+Chybu si pak zopakujete vlastním programem: `./a.out < progtester/vysledky/01_uloha/0001_fail_in.txt`.
+
+Návratový kód testeru je `0`, když nic neselhalo (varování nevadí), `1` při jakémkoli FAIL
+a `2`, když program nejde přeložit nebo používá zakázané funkce.
+
+## Překlad
+
+Program se přeloží jako na Progtestu:
+
+```
+g++ -std=c++20 -Wall -pedantic -D__PROGTEST__ -O2 -Wextra main.c -o prog -lm
+```
+
+- Progtest překládá i soubory `.c` překladačem `g++`, tedy jako C++. Kód, který je platné C, ale ne
+  C++ (např. `int *p = malloc(...)` bez přetypování), proto neprojde ani tady. `--cc gcc` přeloží
+  `.c` jako C (`gcc -std=c11`).
+- `--strict` přidá `-Werror`.
+- Program nesmí volat `system`, `fork`, `exec*`, `popen`, sokety apod., jinak ho Progtest nespustí.
+  Pokud je potřebujete při ladění, dejte je do `#ifndef __PROGTEST__ … #endif`.
+
+Kromě tohoto buildu se program přeloží ještě s `-O0 -fsanitize=address,undefined` a s `--valgrind`
+také s `-O0 -g`; viz [paměťové chyby](#paměťové-chyby-asan-ubsan-a-valgrind).
+
+## Vzorová data
+
+Testují se všechny dvojice `*_in.txt` / `*_out.txt` ze složky `sample/` (včetně podsložek)
+a z [`tests/`](#vlastní-testy-a-generátory). Ze složek `CZE` a `ENG` se bere jen `CZE`; jiný jazyk
+vyberete přes `--lang ENG` nebo `--lang all`. Soubory `*_out_win.txt` se ignorují.
+
+Výstup se porovná přesně, bajt po bajtu. Program dostane vstup ze souboru, takže na konci vždy narazí
+na konec vstupu (EOF). Když program EOF považuje za nesprávný vstup a na konec vypíše chybovou hlášku
+navíc, tester na to upozorní zvlášť. Při ručním zkoušení v terminálu se EOF posílá klávesami **Ctrl+D**.
+
+Některé úlohy mají vzorová data rozdělená na sady, např. `sample/basic/` (povinné testy)
+a `sample/extra/` (nepovinný test s velkými vstupy). Tester každou sadu vyhodnotí zvlášť:
+
+```
 == Shrnuti
    FAIL Zakladni test (vzorova data): 4/8
    FAIL Nepovinny test (vzorova data extra): 0/11
 ```
 
-Podsložky `bonus*` se hlásí jako bonusové testy, jiné názvy jako „Vzorova data <název>“.
-Jen vybrané sady: `--suite basic` (lze opakovat). Soubory `*_out_win.txt` (konce řádků pro Windows) se ignorují.
+Podsložky `bonus*` se hlásí jako bonusové testy. `--suite basic` otestuje jen vybranou sadu
+(přepínač jde opakovat).
 
-## 🔍 Co dělá
+## Rozbíjecí testy
 
-1. **Kompilace** – `g++ -std=c++20 -Wall -pedantic -Wextra -O2 -D__PROGTEST__`
-   - `--strict` přidá `-Werror`.
-   - Progtest překládá i C kód jako C++ – např. `int *p = malloc(...)` bez přetypování tu neprojde. `--cc gcc` přeloží soubor `.c` jako C (`gcc -std=c11`).
-   - Kontrola zakázaných funkcí (`system`, `fork`, `exec*`, …) – s nimi Progtest program nespustí.
-   - Když program s `-D__PROGTEST__` nemá `main()` a ten je jen v `#ifndef __PROGTEST__`, jde o
-     [úlohu „napište funkci“](#-úlohy-napište-funkci) – testuje se pak jinak.
-   - Druhý build s `-O0 -fsanitize=address,undefined` hledá paměťové chyby.
-   - S `--valgrind` třetí build `-O0 -g` pro [valgrind](#-valgrind).
-   - [Štábní kultura kódu](#-štábní-kultura-kódu) – délka a složitost funkcí, globální proměnné, cppcheck, clang-tidy, … se známkou.
-2. **Základní test** – všechny `*_in.txt` / `*_out.txt` z `<úloha>/sample/**` a `<úloha>/tests/**`
-   (jen složky jazyka `--lang`, výchozí `CZE`; lze `--lang ENG` nebo `--lang all`).
-   Porovnává se bajt po bajtu, při chybě se vypíše diff s viditelnými `\n`, mezerami atd.
-   Vstup dostává program **ze souboru** jako na Progtestu, takže na konci vždy přijde konec vstupu (EOF).
-   Při ručním zkoušení v terminálu ho pošlete **Ctrl+D** – jinak program jen čeká a chybu na konci vstupu
-   (typicky `Nespravny vstup.` navíc) neuvidíte. Tester na tenhle případ upozorní.
-3. **Rozbíjecí testy** (vstupy odvozené od vzorových dat):
+Z každého vzorového vstupu tester odvodí další:
 
-   | Skupina | Co se zkouší |
-   |---|---|
-   | Bílé znaky | chybějící/přebývající `\n`, mezery na začátku i na konci řádku (jen varování – očekává se stejný výstup jako u vzoru) |
-   | Mezní hodnoty | čísla ve vstupu nahrazena `INT_MAX`, `INT_MAX+1`, `-0`, `+N`, `000N`, 40 devítek, … (u desetinných úloh i `1e-300`, `4.9e-324`, `1e309`, `inf`, `nan`, …) |
-   | Desetinná čísla | jen u úloh s desetinnými čísly: všechna čísla vzoru vynásobená `1e±6` … `1e±300` (`1.44 + 2.55 = 4` → `0.00000000000144 + 0.00000000000255 = 0.000000000004`) – výstup se smí změnit jen tak, že se čísla v něm přeškálují; kontrolní běh s `1e+3` pozná úlohy, kde to neplatí (`*`, `/`). Odhalí absolutní epsilon a `%.2f`. Dále `1.5` → `1.50`, `15e-1`, `0.15e1` (výstup musí zůstat stejný) |
-   | Nesprávné vstupy | `abc`, `1.23`, `1abc`, `0x1`, prázdný vstup, `\0`, UTF-8, `\r\n`, … |
-   | Useknutý vstup | EOF na každé pozici |
-   | Velké vstupy | 1 MB mezer/nul/smetí, 100k číslic |
-   | Fuzz | náhodné mutace, reprodukovatelné přes `--seed` |
+| Skupina | Co se zkouší |
+|---|---|
+| Bílé znaky | chybějící nebo přebývající `\n`, mezery na začátku a konci řádků |
+| Mezní hodnoty | čísla ve vstupu nahrazená `0`, `-0`, `INT_MAX`, `INT_MAX+1`, `000N`, `+N`, 40 devítek, … |
+| Desetinná čísla | jen u úloh s desetinnými čísly, viz níže |
+| Nesprávné vstupy | `abc`, `1abc`, `1.23`, `0x1`, prázdný vstup, `\0`, UTF-8, `\r\n`, … |
+| Useknutý vstup | vstup ukončený uprostřed, na každé pozici |
+| Velké vstupy | 1 MB mezer, nul nebo náhodných bajtů, 100 000 číslic, vzor 50 000× za sebou |
+| Fuzz | náhodné mutace vzorů (`--fuzz N`, reprodukovatelné přes `--seed`) |
 
-## ✅ Co se kontroluje u vstupů bez známého výstupu
+**Desetinná čísla.** Když vzorový vstup obsahuje desetinná čísla, tester je všechna vynásobí
+`1e±6` až `1e±300`. Výstup se pak smí změnit jen tak, že se stejně přeškálují čísla v něm. Tím se
+odhalí porovnávání s pevným epsilonem nebo výpis přes `%.2f`. Úlohy, kde to neplatí (násobení,
+dělení), tester pozná kontrolním během a test vynechá. Navíc zkouší jiný zápis stejného čísla
+(`1.5` → `1.50`, `15e-1`, `0.15e1`), při kterém se výstup nesmí změnit vůbec.
+
+Většina těchto vstupů nemá známý výstup. Tester u nich kontroluje:
 
 | Úroveň | Kontrola |
 |:---:|---|
-| ❌ FAIL | pád (SIGSEGV, …), timeout, výstup > 16 MB, limit paměti |
-| ❌ FAIL | ASan/UBSan: čtení/zápis mimo pole, přetečení `int`, leak, … |
-| ❌ FAIL | `-O2` a `-O0` build vypíšou něco jiného → nedefinované chování |
-| ❌ FAIL | valgrind (s `--valgrind`): neinicializovaná hodnota, neplatné čtení/zápis, leak |
-| ❌ FAIL | prázdný výstup, chybí `\n` na konci, `\r` ve výstupu, chybí výzva (společný první řádek vzoru) |
-| ⚠️ WARN | řádek, který se nevyskytuje v žádném vzorovém výstupu (čísla se berou jako zástupná) – typicky překlep; nabídne nejpodobnější vzorový řádek |
-| ⚠️ WARN | něco na stderr, běh nad polovinu časového limitu |
+| FAIL | pád (SIGSEGV, …), timeout, překročený limit paměti, výstup nad 16 MB |
+| FAIL | ASan/UBSan: přístup mimo pole, přetečení `int`, únik paměti, … |
+| FAIL | build `-O2` a `-O0` vypíšou něco jiného (nedefinované chování) |
+| FAIL | prázdný výstup, chybí `\n` na konci, `\r` ve výstupu, chybí úvodní výzva (první řádek, který mají všechny vzory společný) |
+| WARN | řádek, který se v žádném vzorovém výstupu nevyskytuje, ani když se čísla berou jako libovolná; tester nabídne nejpodobnější vzorový řádek (typicky překlep) |
+| WARN | výpis na stderr, běh nad polovinu časového limitu |
+| WARN | u bílých znaků a jiného zápisu čísla: výstup se liší od vzoru |
 
 > [!NOTE]
-> Která chybová hláška patří ke kterému vstupu, tester **nerozhoduje** – to by už bylo řešení.
-> Pokud máte referenční binárku (např. vlastní dříve přijaté řešení), použijte `--ref ./binarka`
-> a všechny výstupy se s ní porovnají přesně.
+> Tester nerozhoduje, jestli má program na daný vstup vypsat chybovou hlášku, nebo výsledek. To by
+> vyžadovalo znát řešení. Máte-li referenční program (třeba vlastní dřív přijaté řešení), předejte ho
+> přes `--ref ./binarka` a všechny výstupy se s ním porovnají přesně.
 
-## 🧷 Úlohy „napište funkci“
+## Paměťové chyby: ASan, UBSan a valgrind
 
-U části úloh se neodevzdává celý program, jen funkce. Šablona ze zadání vypadá takhle:
+Každý vstup běží i v buildu s **AddressSanitizerem a UndefinedBehaviorSanitizerem**. Ty najdou
+přístup mimo pole, použití uvolněné paměti, únik paměti nebo přetečení celého čísla a ukážou řádek
+v kódu.
+
+Čtení **neinicializované paměti** sanitizery nepoznají. Typickým příznakem je, že se výstupy `-O2`
+a `-O0` liší, nebo že program na Progtestu dělá něco jiného než doma. Najde ho valgrind:
+`--valgrind` pustí pod valgrindem vzorová data a náhodný výběr menších generovaných vstupů, celkem
+nejvýš 300 (`--valgrind 50` nejvýš 50). Valgrind je zhruba 50× pomalejší, proto se nepouští na všechno.
+
+```
+   FAIL sample/CZE/0000_in.txt
+        - [valgrind] Use of uninitialised value of size 8
+            at _itoa_word (_fitoa_word.c:38)
+            ...
+            by printf (printf.c:33)
+            by main (uninit.c:13)
+          Uninitialised value was created by a heap allocation
+            at malloc (vg_replace_malloc.c:447)
+            by main (uninit.c:7)
+```
+
+## Úlohy „napište funkci“
+
+U některých úloh se odevzdává jen funkce a zadání obsahuje testovací `main()` s asserty:
 
 ```c
 #ifndef __PROGTEST__
@@ -156,70 +261,57 @@ int main(void)
 #endif /* __PROGTEST__ */
 ```
 
-Tester takovou úlohu pozná sám (s `-D__PROGTEST__` v programu není `main()`) a místo vzorových dat:
+Tester takovou úlohu pozná podle toho, že s `-D__PROGTEST__` v kódu žádný `main()` nezbude. Pak:
 
-1. **Přeloží kód tak jako Progtest** – s `-D__PROGTEST__` a s hlavičkami z bloků `#ifndef __PROGTEST__`
-   (ty Progtest dodává sám). Navíc zkontroluje, že kód nepoužívá funkci, která je definovaná jen
-   v testovací části – na Progtestu by chyběla:
-   ```
-   FAIL na progtestu nebudou definovane: square(int) - jsou jen v #ifndef __PROGTEST__ ...
-   ```
-2. **Spustí testovací `main()` ze zadání** jako `-O2`, pod ASan/UBSan a pod valgrindem (pokud je
-   nainstalovaný). Používá k tomu vlastní `assert` ([pt/include/assert.h](pt/include/assert.h)), který:
-   - **neukončí program** u prvního selhání – uvidíte všechny selhané asserty najednou,
-   - **vypíše hodnoty** obou stran porovnání (u `&&` první nesplněnou část),
-   - při pádu nebo zacyklení řekne, **u kterého assertu** se to stalo.
+1. Přeloží kód jako Progtest, tedy s `-D__PROGTEST__` a s hlavičkami z bloků `#ifndef __PROGTEST__`,
+   které Progtest dodává sám. Ohlásí funkce, které vaše řešení volá, ale jsou definované jen
+   v testovací části, takže na Progtestu by chyběly.
+2. Spustí testovací `main()` v buildu `-O2`, pod ASan/UBSan a pod valgrindem (je-li nainstalovaný).
+   Používá přitom vlastní [`assert`](pt/include/assert.h), který po selhání pokračuje dál, vypíše
+   hodnoty obou stran porovnání a při pádu nebo zacyklení řekne, u kterého assertu se to stalo.
 
 ```
 == Testy z main() v #ifndef __PROGTEST__ (asserty ze zadani)
    FAIL [-O2] selhalo 3 assertu z 10
         r. 31: assert(absVal(-5) == 5)
                hodnoty: -5 == 5
+        r. 32: assert(absVal(-7) == 7 && idx == 3)
+               hodnoty: -7 == 7
         r. 37: assert(third() == 0.3)
                hodnoty: 0.30000000000000004 == 0.3
-   FAIL [-O2] program spadl (SIGSEGV) pri assertu na r. 23
-   FAIL [ASan/UBSan] pametova chyba / nedefinovane chovani:
-        crash.c:12:17: runtime error: load of null pointer of type 'const int'
-          #0 0x.. in getItem(int const*, int) crash.c:12
-          #1 0x.. in main crash.c:23
+    OK  ASan/UBSan: bez chyb, asserty dopadly stejne jako v -O2
+    OK  valgrind: bez chyb, asserty dopadly stejne jako v -O2
 ```
 
-Hodnoty se vypisují pro čísla, znaky, řetězce (`char *` i `std::string`), ukazatele (`NULL`)
-a všechno, co jde vypsat přes `operator<<`. Funguje to i pro C kód, protože ho `g++` překládá jako C++.
-S `--cc gcc` (překlad jako C) se asserty jen počítají, bez hodnot. Když nějaký assert nejde rozložit
-(např. přiřazení `assert(x = f())`), použije se standardní `assert`, který skončí u prvního selhání.
+Hodnoty se vypíšou u čísel, znaků, řetězců (`char *` i `std::string`), ukazatelů a všeho, co jde
+vypsat přes `operator<<`; u `&&` jen první nesplněná část. S `--cc gcc` se asserty jen počítají,
+bez hodnot. Assert, který nejde rozložit (např. `assert(x = f())`), se vyhodnotí standardním
+`assert` a program u prvního selhání skončí.
 
-Vzorová data, generované vstupy ani odhad složitosti se u těchto úloh nedělají – program nečte vstup.
-Štábní kultura kódu se kontroluje stejně (testovací část v `#ifndef __PROGTEST__` se nepočítá).
+## Štábní kultura kódu
 
-## 🧹 Štábní kultura kódu
+Tester kód projde a oznámkuje podle pravidel v tabulce. Známka je orientační: pravidla odpovídají
+běžným doporučením pro čitelný C/C++ kód, nejsou to oficiální kritéria Progtestu ani cvičících.
 
-Hned po kompilaci tester zkontroluje kód samotný a oznámkuje ho. Pro C/C++ neexistuje jeden závazný styl
-jako PEP 8 u Pythonu – kontroluje se proto to, na čem se shodnou běžné styly (Linux kernel, Google, CERT)
-i cvičící:
-
-| Co | Limit / pravidlo |
+| Co | Pravidlo |
 |---|---|
 | délka funkce | nejvýš 50 řádků kódu (nad 100 vážný prohřešek) |
-| větvení (cyklomatická složitost: `if`/`for`/`while`/`case`/`&&`/`\|\|`/`?`) | nejvýš 10 (nad 20 vážný) |
-| zanoření bloků | nejvýš 3 (nad 5 vážný) |
+| větvení (`if`, `for`, `while`, `case`, `&&`, `\|\|`, `?`) | nejvýš 10 cest kódem (nad 20 vážný prohřešek) |
+| zanoření bloků | nejvýš 3 úrovně (nad 5 vážný prohřešek) |
 | parametry funkce | nejvýš 5 |
 | celý program v `main` | těžký prohřešek |
-| komentář nad delšími funkcemi (kromě `main`) | aspoň u poloviny |
-| globální proměnné, `goto` | nepoužívat (konstanty `const`/`#define` jsou v pořádku) |
-| magická čísla | víc než 5 různých čísel (mimo 0, 1, 2, 10, 100) → pojmenovat |
-| duplicitní kód | 5+ stejných řádků na dvou místech → vytáhnout do funkce |
+| komentáře | aspoň polovina delších funkcí (kromě `main`) má komentář |
+| globální proměnné, `goto` | nepoužívat (konstanty přes `const` nebo `#define` jsou v pořádku) |
+| magická čísla | víc než 5 různých čísel kromě 0, 1, 2, 10 a 100 → pojmenovat je |
+| duplicitní kód | 5 a více stejných řádků na dvou místech → vytáhnout do funkce |
 | pojmenování | nemíchat `snake_case` a `camelCase` |
-| odsazení, délka řádku | nemíchat tabulátory a mezery, řádky do 120 znaků |
+| formátování | nemíchat tabulátory a mezery, řádky nejvýš 120 znaků |
 
-Kód v `#ifndef __PROGTEST__ … #endif` (testovací `main` ze zadání) se nekontroluje.
+Testovací část v `#ifndef __PROGTEST__ … #endif` se nekontroluje.
 
-Když je nainstalovaný **cppcheck** nebo **clang-tidy** (`sudo apt install cppcheck clang-tidy`), přiberou se i
-jejich nálezy. Analýza běží ve stejném jazyce, v jakém kód překládá Progtest (`.c` jako C++), u souborů `.c`
-se ale vynechají rady platné jen pro C++ (const reference, `std::` algoritmy, …).
-Závažnosti `error`/`warning` z cppcheck a `bugprone-*` z clang-tidy jsou **pravděpodobné chyby**
-(neinicializovaná proměnná, únik paměti při `realloc`, přetečení při násobení, …) – vypíšou se zvlášť a do
-známky za styl se nepočítají.
+Pokud jsou nainstalované **cppcheck** nebo **clang-tidy**, přidají se jejich nálezy. Nálezy, které
+ukazují spíš na chybu než na styl (`error`/`warning` z cppcheck, `bugprone-*` z clang-tidy, např.
+neinicializovaná proměnná nebo únik paměti při `realloc`), se vypíšou zvlášť a do známky se nepočítají.
 
 ```
    funkce                           radku  vetveni  zanoreni  param  komentar
@@ -236,82 +328,66 @@ známky za styl se nepočítají.
    -> znamka 3: dobre - stoji za to uklidit (12 trestnych bodu, 3.6 na 100 radku kodu)
 ```
 
-**Známka:** každý nález má trestné body (drobnost 1, vážný 2, všechno v `main` 6; stejný druh se započítá
-nejvýš 3×). Body se přepočtou na 100 řádků kódu (kratší program se počítá jako 100 řádků):
-≤ 1 → **1**, ≤ 2,5 → **2**, ≤ 4,5 → **3**, ≤ 7 → **4**, jinak **5**.
+**Jak vzniká známka:** drobný nález má 1 trestný bod, vážný 2 a celý program v `main` 6. Stejný druh
+nálezu se započítá nejvýš třikrát. Body se přepočtou na 100 řádků kódu (kratší program se počítá jako
+100 řádků): do 1 bodu známka **1**, do 2,5 **2**, do 4,5 **3**, do 7 **4**, víc **5**.
 
-## 🔬 Valgrind
+## Odhad časové složitosti
 
-ASan/UBSan **nepozná čtení neinicializované paměti** (proměnná bez počáteční hodnoty, paměť z `malloc`/`realloc`).
-Typický příznak je, že se výstup `-O2` a `-O0` buildu liší, nebo že program na Progtestu dělá něco jiného než doma.
-Valgrind ukáže přesné místo i to, kde paměť vznikla:
+Na závěr tester odhadne, jak rychle roste doba běhu s velikostí vstupu. Úlohu nezná, takže vychází
+ze vzorových vstupů a zkouší je zvětšovat obecnými způsoby. Na příkladu vzorového řádku `1 2 3`:
 
-```
-FAIL sample/basic/CZE/0000_in.txt
-     - [valgrind] Conditional jump or move depends on uninitialised value(s)
-         at operation_calculate_hotel_price(array, time, time) (program.c:341)
-         by main (program.c:64)
-       Uninitialised value was created by a heap allocation
-         at realloc (vg_replace_malloc.c:1804)
-         by insert_array(array*, operation) (program.c:464)
-```
-
-Valgrind je asi 50× pomalejší, proto se pouští jen na vzorová data a náhodný výběr menších generovaných
-vstupů: `--valgrind` = nejvýše 300 vstupů, `--valgrind 50` = nejvýše 50.
-
-## 📈 Odhad složitosti
-
-Po ostatních testech tester odhadne časovou složitost programu – **bez znalosti úlohy**, jen ze vzorových dat.
-Vzorové vstupy zkouší obecnými způsoby zvětšovat a sleduje, jak roste CPU čas:
-
-| Způsob zvětšení | Příklad (`+ 2026-01-01 12:00, 80`) | Ideál |
+| Způsob zvětšení | Příklad | Ideál |
 |---|---|:---:|
-| řádek n-krát | stejný řádek n-krát za sebou | O(n log n) |
-| řádek n-krát, číslo +1 | `+ 2026-…`, `+ 2027-…`, `+ 2028-…` (rostoucí čas, id, …) | O(n log n) |
-| prvek n-krát | číslo i s oddělovačem za ním n-krát (posloupnost na jednom řádku) | O(n log n) |
+| řádek n-krát | `1 2 3` n-krát pod sebou | O(n log n) |
+| řádek n-krát, číslo o 1 větší | `1 2 3`, `1 2 4`, `1 2 5`, … | O(n log n) |
+| prvek n-krát | `1 1 1 … 1 2 3` | O(n log n) |
 | celý vstup n-krát | celý vzorový vstup n-krát za sebou | O(n log n) |
-| číslo + n | `+ 2026-01-01 12:00, [80 + n]` – velikost hodnoty (délka intervalu, rozpočet, …) | O(log n) |
+| číslo + n | `1 2 [3 + n]` | O(log n) |
 
-- **Platnost:** zvětšený vstup platí, jen dokud ho program přijímá – nesmí spadnout ani vypsat chybovou hlášku
-  dřív než u původního vzoru a odpovědí musí s n přibývat stejným tempem. Kde ho program přestane přijímat,
-  tam končí platný rozsah (dohledá se půlením) a na něj se extrapoluje čas. Program tedy sám „řekne“,
-  jak velké vstupy dává smysl zkoušet (např. rok jen do 2999).
-- **Výběr:** všechny způsoby se nejdřív hrubě změří paralelně, pak se ty, které program měřitelně zpomalují,
-  seřadí podle toho, o kolik jsou horší než ideál, a nejhorší (`--complexity-max`, default 6) se změří přesně
-  a postupně. Způsoby se stejným závěrem se měří jen jednou.
-- **Model:** naměřené časy se proloží modely `t = c + a·f(n)` pro `f` = 1, log n, n, n log n, n², n³;
-  z modelů, které sedí skoro stejně dobře, se vybere ten nejjednodušší.
-- **Pády** při zvětšování se hlásí zvlášť (a zopakují se bez limitu paměti – pozná se tak, jestli program
-  jen potřebuje moc paměti / nekontroluje `NULL` z `malloc`). Vstup se uloží do `vysledky/`.
-- **Náhlý skok** (čas se nemění a pak prudce vzroste) typicky znamená přetečení proměnné nebo nekonečnou smyčku.
+Zvětšený vstup se počítá, jen dokud ho program přijímá: nesmí spadnout ani vypsat chybovou hlášku
+a počet odpovědí musí růst s n. Tím program sám vymezí, jak velké vstupy dávají smysl. Všechny způsoby
+se nejdřív zběžně změří, a ty, které program zpomalují nejvíc, se pak změří přesně (`--complexity-max`,
+výchozí 6). Naměřené časy se proloží modely O(1), O(log n), O(n), O(n log n), O(n²) a O(n³):
 
 ```
-   cislo '# 2000-12-08 23:27, [1163189]' zvetsene o n  (sample/extra/CZE/0000_in.txt:11)  (idealne O(log n))
+   radek '1 2 3' n-krat  (sample/CZE/0000_in.txt:1)  (idealne O(n log n))
                 n     CPU cas      vstup
-                1     23.1 ms       0 kB
-              ...
-          6.9e10      1.10 s       0 kB
-   -> namereno O(n) (nebo O(n log n)), lokalni exponent n^0.96
-   -> znamka 4: cas roste s hodnotou cisla jako O(n) a program takovy vstup prijima - pri vetsim n nestihne limit (idealne O(log n))
+                1      2.4 ms       0 kB
+               64      5.3 ms       0 kB
+            2 048      9.9 ms      12 kB
+            8 192     68.0 ms      48 kB
+           32 768    946.4 ms     192 kB
+   -> namereno O(n^2), lokalni exponent n^1.89
+   -> limit 1 s by se prekrocil od n ~ 32 768
+   -> znamka 4: cas roste s poctem prvku jako O(n^2) a program takovy vstup prijima - pri vetsim n nestihne limit (idealne O(n log n))
 ```
 
 | Známka | Význam |
 |:---:|---|
-| 1 | složitost odpovídá ideálu (a stihne limit) |
-| 2 | horší než ideál, ale v rozsahu, který program přijímá, limit stihne – jde to lépe |
-| 3 | horší než ideál o jednu třídu / dobrá složitost s moc velkou konstantou |
-| 4 | horší a nestihne limit / podezřelý skok |
+| 1 | složitost odpovídá ideálu a stihne limit |
+| 2 | horší než ideál, ale na vstupech, které program přijímá, limit stihne |
+| 3 | o jednu třídu horší než ideál, nebo dobrá složitost s příliš velkou konstantou |
+| 4 | horší než ideál a nestihne limit, nebo podezřelý skok v čase |
 | 5 | řádově pomalé |
 
+Pokud program při zvětšování spadne, tester to ohlásí a vstup uloží do `vysledky/`. Zkusí ho i bez
+limitu paměti, aby bylo vidět, jestli program jen potřebuje moc paměti nebo nekontroluje `NULL`
+z `malloc`. Náhlý skok v čase (dlouho stejný, pak prudký nárůst) obvykle znamená přetečení
+proměnné nebo nekonečnou smyčku.
+
 > [!NOTE]
-> Je to odhad, ne důkaz. Měří se jen to, co jde odvodit ze vzorových dat – pokud se nějaký parametr ve
-> vzorech neobjevuje (např. vzory mají jen pár změn ceníku), tester ho zvětšit nemusí umět. O(n) a O(n log n)
-> se měřením odlišují špatně, tester pak vypíše obě možnosti.
+> Je to odhad, ne důkaz. Tester umí zvětšit jen to, co ve vzorových datech vidí. O(n) a O(n log n)
+> se měřením rozlišují špatně, proto tester v takovém případě vypíše obě možnosti.
 
-### Vlastní generátor (nepovinné)
+## Vlastní testy a generátory
 
-Když chcete měřit něco konkrétního, dejte do složky úlohy `complexity.py` (nebo `--complexity SOUBOR`)
-a tester použije ten místo automatiky:
+**Vlastní testy:** soubory `NNNN_in.txt` a `NNNN_out.txt` ve složce `<úloha>/tests/` se testují stejně
+jako vzorová data. Jejich výstupy navíc rozšíří sadu řádků, které tester považuje za známé.
+
+**Vlastní generátor pro odhad složitosti:** když chcete měřit konkrétní parametr, dejte do složky
+úlohy soubor `complexity.py` (nebo ho předejte přes `--complexity SOUBOR`). Tester ho pak použije
+místo automatického zvětšování:
 
 ```python
 TIME_LIMIT = 1.0   # [s] nepovinné, jinak --timeout
@@ -322,68 +398,52 @@ def gen(n):        # vrací SPRÁVNÝ vstup velikosti n (str nebo bytes)
 SERIES = [dict(name="počet prvků", gen=gen, n_min=16, n_max=1_000_000, target="n log n")]
 ```
 
-`n_min` = první velikost (dál se zdvojuje), `n_max` = největší `n` na Progtestu (na něj se extrapoluje),
-`target` = složitost dobrého řešení (`1`, `log n`, `n`, `n log n`, `n^2`, `n^3`).
+`n_min` je první měřená velikost (dál se zdvojuje), `n_max` největší `n`, které může přijít na
+Progtestu (na tu se čas extrapoluje), a `target` složitost dobrého řešení: `1`, `log n`, `n`,
+`n log n`, `n^2` nebo `n^3`.
 
-## 🧩 Vlastní testy
-
-Přidejte soubory `NNNN_in.txt` + `NNNN_out.txt` do `<úloha>/tests/` – berou se jako další vzorová data
-(a jejich výstupy rozšíří sadu „známých“ řádků).
-
-## 📂 Výsledky
-
-Každý neúspěšný vstup se uloží do `progtester/vysledky/<úloha>/`:
-
-| Soubor | Obsah |
-|---|---|
-| `XXXX_in.txt` | vstup |
-| `XXXX_out.txt` | váš výstup |
-| `XXXX_ref.txt` | očekávaný výstup (pokud je znám) |
-| `XXXX_info.txt` | co bylo špatně |
-
-Reprodukce: `./a.out < progtester/vysledky/01_uloha/0003_fail_in.txt`
-
-**Návratový kód:** `0` = bez chyb (varování nevadí) · `1` = nějaký FAIL · `2` = nejde přeložit / zakázané funkce.
-
-## ⚙️ Přepínače
+## Přepínače
 
 | Přepínač | Výchozí | Popis |
 |---|:---:|---|
-| `--lang CZE\|ENG\|all` | `CZE` | které jazykové složky se testují |
-| `--timeout S` | `1` | limit na jeden běh v sekundách |
-| `--mem MB` | `256` | limit paměti pro `-O2` build |
-| `--fuzz N` | `200` | počet náhodných testů |
-| `--seed N` | `1` | seed pro fuzz |
-| `--no-asan` | | nespouštět ASan/UBSan build |
-| `--no-big` | | vynechat velké vstupy |
-| `--only-samples` | | jen vzorová data (bez odhadu složitosti) |
-| `--suite SADA` | | jen vybrané sady vzorových dat (`basic`, `extra`, `bonus…`, `tests`); lze opakovat |
-| `--valgrind [N]` | | pustit vzorová data + menší vstupy pod valgrindem, nejvýše N (default 300) |
-| `--complexity SOUBOR` | | vlastní generátor vstupů místo automatiky (default `<úloha>/complexity.py`, pokud existuje) |
-| `--complexity-max N` | `6` | kolik nejhorších způsobů zvětšení vstupu změřit přesně |
-| `--no-complexity` | | nedělat odhad složitosti |
+| **Co testovat** | | |
+| `--only-samples` | | jen vzorová data |
+| `--only-style` | | jen překlad a štábní kultura |
 | `--only-complexity` | | jen odhad složitosti |
-| `--no-style` | | nekontrolovat štábní kulturu kódu |
-| `--only-style` | | jen kompilace a štábní kultura kódu |
-| `--strict` | | kompilovat s `-Werror` |
-| `--cc g++\|gcc` | `g++` | překladač (`gcc` = překlad jako C) |
-| `--ref BIN` | | referenční binárka – přesné porovnání všech výstupů |
-| `--show N` | `3` | kolik detailů vypsat na skupinu |
-| `--out SLOŽKA` | `vysledky/<úloha>` | kam uložit problémové vstupy (složka se na začátku vyprázdní; existující neprázdnou složku, kterou nevytvořil tester, odmítne) |
-| `-j N` | počet jader | počet paralelních úloh |
-| `--src SOUBOR` | | konkrétní zdrojový soubor, když jich je ve složce víc |
+| `--no-style` | | bez kontroly štábní kultury |
+| `--no-complexity` | | bez odhadu složitosti |
+| `--no-asan` | | bez buildu s ASan/UBSan |
+| `--no-big` | | bez velkých vstupů |
+| `--valgrind [N]` | | navíc valgrind na nejvýš N vstupech (bez čísla 300) |
+| `--suite SADA` | | jen vybraná sada vzorových dat (`basic`, `extra`, `bonus…`, `tests`); jde opakovat |
+| `--lang CZE\|ENG\|all` | `CZE` | jazyk vzorových dat |
+| `--fuzz N` | `200` | počet náhodných vstupů |
+| `--seed N` | `1` | seed pro náhodné vstupy |
+| `--ref BIN` | | referenční program, se kterým se porovnají všechny výstupy |
+| **Limity** | | |
+| `--timeout S` | `1` | časový limit na jeden běh v sekundách |
+| `--mem MB` | `256` | limit paměti pro build `-O2` |
+| **Překlad** | | |
+| `--src SOUBOR` | | zdrojový soubor, když je ve složce víc |
+| `--cc g++\|gcc` | `g++` | překladač; `gcc` přeloží `.c` jako C |
+| `--strict` | | překlad s `-Werror` |
+| **Odhad složitosti** | | |
+| `--complexity SOUBOR` | `<úloha>/complexity.py` | vlastní generátor vstupů |
+| `--complexity-max N` | `6` | kolik nejhorších způsobů zvětšení změřit přesně |
+| **Výstup** | | |
+| `--show N` | `3` | kolik problémů vypsat podrobně v každé skupině |
+| `--out SLOŽKA` | `vysledky/<úloha>` | kam uložit problémové vstupy; na začátku se vyprázdní, existující neprázdnou složku, kterou nevytvořil tester, odmítne |
+| `-j N` | počet jader | kolik testů pouštět paralelně |
 
-## 🛠️ Testy testeru
+## Vývoj testeru
 
-Tester má vlastní testy ve složce [tests/](tests/): unit testy (rozpoznání bloků `#ifndef __PROGTEST__`,
-fit složitosti, štábní kultura, …) a end-to-end testy, které pouští celý tester na malé programy se
-známou chybou ([tests/fixtures/](tests/fixtures/) – chyba na konci vstupu, zápis mimo pole,
-neinicializovaná proměnná, O(n²), pád v assertu, únik paměti, …).
+Tester má vlastní testy ve složce [tests/](tests/): unit testy jednotlivých částí a end-to-end testy,
+které pouštějí celý tester na malé programy se známou chybou ([tests/fixtures/](tests/fixtures/)).
 
 ```sh
 python3 -m unittest discover -s tests            # vše (~1 min)
 PT_FAST=1 python3 -m unittest discover -s tests  # bez odhadu složitosti (~25 s)
 ```
 
-Před úpravou heuristik (odhad složitosti, štábní kultura, generátor vstupů) je dobré je pustit –
-tyhle části se snadno rozbijí tiše.
+Pusťte je hlavně po úpravě heuristik (odhad složitosti, štábní kultura, generování vstupů). Tyhle
+části se dají rozbít, aniž by to bylo na první pohled vidět.
