@@ -71,8 +71,9 @@ def _san_report(stderr: bytes) -> str:
         ln = re.sub(r"0x[0-9a-f]{8,}", "0x..", ln)
         if re.search(r"ERROR:|runtime error:|SUMMARY:", ln):
             keep.append(ln)
-        elif re.search(r"#\d+ .* in \S+ \S+\.(c|cpp|h):\d+", ln):
-            keep.append("  " + ln)  # ramce z kodu studenta (libc vynechavame)
+        elif (re.search(r"#\d+ .* in .+ \S+\.(c|cpp|cc|cxx|h|hpp):\d+", ln)
+              and not re.search(r" \.\.|asan_|sanitizer_common|__libc_start", ln)):
+            keep.append("  " + ln)  # ramce z kodu studenta (libc a runtime sanitizeru vynechavame)
     return "\n".join(keep[:8]) or stderr.decode("utf-8", "replace")[:600]
 
 

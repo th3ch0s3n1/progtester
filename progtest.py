@@ -11,9 +11,10 @@ import shutil
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from pt import build, complexity, gen, style
+from pt import build, complexity, gen, harness, style
 from pt.checks import FAIL, WARN, Oracle, diff, evaluate
 from pt.runner import run
 
@@ -66,48 +67,88 @@ def parse_args():
     ap.add_argument("--strict", action="store_true", help="kompilovat s -Werror")
     ap.add_argument("--ref", help="referencni binarka - vystupy vsech testu se s ni porovnaji presne")
     ap.add_argument("--show", type=int, default=3, help="kolik detailu vypsat na skupinu (default 3)")
+    ap.add_argument("--out", metavar="SLOZKA",
+                    help="kam ulozit problemove vstupy (default vysledky/<uloha>)")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 2)
     return ap.parse_args()
 
 
-def compile_all(src: Path, workdir: Path, args):
+@dataclass
+class Compiled:
+    rel: Path | None = None          # -O2 binarka (uloha se vstupem/vystupem)
+    san: Path | None = None
+    dbg: Path | None = None
+    function_task: bool = False      # uloha "napis funkci" - testuje se main() ze zadani
+    problems: list = field(default_factory=list)  # chyby, kvuli kterym progtest program neprelozi
+
+
+def compile_all(src: Path, workdir: Path, args) -> Compiled:
     print(c(f"== Kompilace {src.name}", "1"))
-    rel = build.build_release(src, workdir, args.strict, args.cc)
-    print("   " + " ".join(rel.cmd[:-3]) + " -o prog -lm")
-    if rel.output:
-        print(c("   " + rel.output.replace("\n", "\n   "), "33"))
-    if not rel.ok:
+    res = Compiled()
+    obj = build.compile_object(src, workdir, args.strict, args.cc)
+    text = src.read_text(errors="replace")
+    if not (obj.ok and build.defines_main(obj.binary)) and harness.has_test_main(text):
+        # main() je jen v #ifndef __PROGTEST__ -> uloha "napis funkci"; progtest pred kod
+        # vlozi hlavicky ze zadani (obsah ostatnich bloku #ifndef __PROGTEST__)
+        hdr = workdir / "progtest_header.h"
+        hdr.write_text(harness.progtest_header(text, src.name))
+        obj = build.compile_object(src, workdir, args.strict, args.cc, include=hdr)
+        res.function_task = not (obj.ok and build.defines_main(obj.binary))
+    print("   " + build.display_cmd(obj))
+    if res.function_task:
+        print(c("   Uloha \"napis funkci\": main() je jen v #ifndef __PROGTEST__ - prekladam jako progtest "
+                "(s -D__PROGTEST__, hlavicky ze zadani), testy z main() zvlast.", "2"))
+    if obj.output:
+        print(c("   " + obj.output.replace("\n", "\n   "), "33"))
+    if not obj.ok:
         print(badge(FAIL) + " Kompilace selhala - program nelze testovat.")
         sys.exit(2)
-    forb = build.forbidden_symbols(rel.binary)
+
+    if res.function_task:
+        target = obj.binary
+    else:
+        rel = build.link(obj, src, args.cc)
+        if not rel.ok:
+            why = ("program nema funkci main()" if "undefined reference to `main'" in rel.output
+                   else rel.output[-600:])
+            print(badge(FAIL) + f" Linkovani selhalo: {why}")
+            sys.exit(2)
+        target = res.rel = rel.binary
+    forb = build.forbidden_symbols(target)
     if forb:
         print(badge(FAIL) + f" Program pouziva zakazane funkce: {', '.join(forb)} - progtest ho nespusti!")
         print("   Tip: obal je do #ifndef __PROGTEST__ ... #endif")
         sys.exit(2)
-    elif rel.output:
-        print(badge(WARN) + " Prelozeno s varovanimi (progtest je ukaze taky).")
-    else:
-        print(badge("OK") + " Prelozeno bez varovani.")
+    if res.function_task:
+        missing = build.missing_functions(obj.binary, src, args.cc)
+        if missing:
+            msg = (f"na progtestu nebudou definovane: {', '.join(missing)} - jsou jen v #ifndef "
+                   f"__PROGTEST__ (nebo nikde); presun je pred #ifndef __PROGTEST__")
+            print(badge(FAIL) + " " + msg)
+            res.problems.append(msg)
+    if not res.problems:
+        print(badge(WARN) + " Prelozeno s varovanimi (progtest je ukaze taky)." if obj.output
+              else badge("OK") + " Prelozeno bez varovani.")
+    if res.function_task:
+        return res
 
-    san = None
     if not args.no_asan and not args.only_complexity and not args.only_style:
         s = build.build_sanitized(src, workdir, args.cc)
         if s.ok:
-            san = s.binary
+            res.san = s.binary
         else:
             print(badge(WARN) + " ASan/UBSan build se nepovedl, pokracuji bez nej:\n   " + s.output[:400])
 
-    dbg = None
     if args.valgrind and not args.only_complexity and not args.only_style:
         if not shutil.which("valgrind"):
             print(badge(WARN) + " valgrind neni nainstalovany (apt install valgrind), --valgrind se preskakuje.")
         else:
             d = build.build_debug(src, workdir, args.cc)
             if d.ok:
-                dbg = d.binary
+                res.dbg = d.binary
             else:
                 print(badge(WARN) + " build pro valgrind se nepovedl:\n   " + d.output[:400])
-    return rel.binary, san, dbg
+    return res
 
 
 def pick_valgrind(cases, limit: int, seed: int) -> set:
@@ -333,6 +374,109 @@ def run_style(src: Path, args):
     return rep
 
 
+def _assert_run(label, b: build.Build, smart: bool, timeout: float, mem, env_extra: dict, wd: Path,
+                vg: bool = False):
+    """Spusti testovaci main() a vrati (vysledek behu, AssertLog, log valgrindu)."""
+    log = wd / f"asserts_{b.binary.name}.log"
+    log.unlink(missing_ok=True)
+    env = dict(env_extra)
+    env["PT_ASSERT_LOG"] = str(log)
+    # vlastni casovac v programu (rekne, u ktereho assertu) vyprsi o chlup driv nez runner
+    env["PT_ASSERT_TIMEOUT_MS"] = str(int(timeout * 1000))
+    cmd, vg_log = [b.binary], None
+    if vg:
+        vg_file = wd / "asserts_vg.log"
+        cmd = build.valgrind_cmd(b.binary, vg_file)
+    r = run(cmd, b"", timeout + 0.5, mem, env)
+    if vg and vg_file.exists():
+        vg_log = vg_file.read_text(errors="replace")
+    text = log.read_text(errors="replace") if log.exists() else ""
+    return r, harness.parse_log(text) if smart else harness.parse_glibc(r.stderr), vg_log
+
+
+@dataclass
+class FuncResult:
+    passed: int | None = None     # None = main() nedobehl (pad, timeout) nebo se nepocitalo
+    total: int | None = None
+    failed: int = 0
+    broken: list = field(default_factory=list)  # buildy s padem / pametovou chybou / timeoutem
+    level: str = "OK"
+
+
+def _run_args(r, smart, wd):
+    label, b, env, timeout, mem, vg = r
+    return label, b, smart, timeout, mem, env, wd, vg
+
+
+def run_function_tests(src: Path, wd: Path, args) -> FuncResult:
+    """Uloha "napis funkci": spusti main() s asserty ze zadani (-O2, ASan/UBSan, valgrind)."""
+    print(c("\n== Testy z main() v #ifndef __PROGTEST__ (asserty ze zadani)", "1"))
+    smart = True
+    rel = build.build_test(src, wd, "release", args.cc)
+    if not rel.ok:
+        plain = build.build_test(src, wd, "release", args.cc, smart=False)
+        if not plain.ok:
+            print(badge(FAIL) + " testovaci main() nejde prelozit:\n   " + plain.output[:800].replace("\n", "\n   "))
+            return FuncResult(broken=["preklad testu"], level=FAIL)
+        smart, rel = False, plain
+        print(c("   (vyrazy v assertech nejdou rozlozit na hodnoty - pouzivam standardni assert, "
+                "ktery skonci u prvniho selhani)", "2"))
+    runs = [("-O2", rel, dict(os.environ), args.timeout, args.mem, False)]
+    if not args.no_asan:
+        san = build.build_test(src, wd, "asan", args.cc, smart)
+        if san.ok:
+            runs.append(("ASan/UBSan", san, build.asan_env(), args.timeout * 5, None, False))
+        else:
+            print(badge(WARN) + " ASan/UBSan build se nepovedl:\n   " + san.output[:400])
+    if shutil.which("valgrind"):
+        dbg = build.build_test(src, wd, "debug", args.cc, smart)
+        if dbg.ok:
+            runs.append(("valgrind", dbg, dict(os.environ), max(args.timeout * 50, 20), None, True))
+    else:
+        print(c("   Tip: sudo apt install valgrind - najde i neinicializovane promenne", "2"))
+
+    # -O2 nejdriv: kdyz se zacykli, valgrind (~50x pomalejsi) nema smysl nechat bezet desitky sekund
+    first = _assert_run(*_run_args(runs[0], smart, wd))
+    if first[0].timed_out or first[1].timeout_at is not None:
+        runs = [r if r[0] != "valgrind" else (*r[:3], args.timeout * 5, *r[4:]) for r in runs]
+    with ThreadPoolExecutor(max(1, len(runs) - 1)) as ex:
+        results = [first] + list(ex.map(lambda r: _assert_run(*_run_args(r, smart, wd)), runs[1:]))
+
+    res, base_fails = FuncResult(), None
+    for (label, _, _, timeout, _, _), (r, log, vg_log) in zip(runs, results):
+        fails = [(f.line, f.expr) for f in log.failures]
+        first = base_fails is None
+        v = harness.assess(label, r, log, timeout, sanitized=label.startswith("ASan"), vg_log=vg_log,
+                           count_failures=first)
+        if first:
+            base_fails, res.passed, res.total, res.failed = fails, log.passed, log.total, log.failed
+        elif fails != base_fails and log.total is not None and res.total is not None:
+            v.add(FAIL, f"[{label}] asserty dopadly jinak nez v -O2 buildu -> nedefinovane chovani "
+                        "(neinicializovana promenna, cteni mimo pole, ...)")
+        if label == "-O2" and log.total == 0 and not v.issues:
+            v.add(WARN, "testovaci main() neobsahuje zadny assert - nic se neoveruje")
+        if v.level == "OK":
+            stat = ("bez chyb, asserty dopadly stejne jako v -O2" if not first and res.failed
+                    else f"vsech {log.total} assertu proslo" if log.total else "bez chyb")
+            cpu = f" ({r.cpu:.2f} s CPU)" if label == "-O2" else ""
+            print(f"   {badge('OK')} {label}: {stat}{cpu}")
+        else:
+            for lvl, msg in v.issues:
+                print(f"   {badge(lvl)} " + c(msg.replace("\n", "\n        "), "31" if lvl == FAIL else "33"))
+        if label == "-O2" and log.failures:
+            for f in log.failures[:max(args.show, 10)]:
+                print(f"        r. {f.line}: assert({f.expr})")
+                if f.detail:
+                    print(c(f"               hodnoty: {f.detail}", "33"))
+            if log.failed > max(args.show, 10):
+                print(c(f"        ... a dalsich {log.failed - max(args.show, 10)}", "2"))
+        if any(lv == FAIL and not m.startswith(f"[{label}] selhalo") for lv, m in v.issues):
+            res.broken.append(label)
+        if v.level == FAIL or (v.level == WARN and res.level == "OK"):
+            res.level = v.level
+    return res
+
+
 def main():
     args = parse_args()
     task = Path(args.task).resolve()
@@ -340,9 +484,50 @@ def main():
     src = build.find_source(task, args.src)
     cx_spec = find_complexity(task_dir, args)
 
+    outdir = Path(args.out).resolve() if args.out else TESTER_DIR / "vysledky" / task_dir.name
+    shutil.rmtree(outdir, ignore_errors=True)
+    outdir.mkdir(parents=True)
+
+    with tempfile.TemporaryDirectory(prefix="progtest_") as wd:
+        comp = compile_all(src, Path(wd), args)
+        style_rep = None
+        if not args.no_style and not args.only_complexity:
+            style_rep = run_style(src, args)
+        if comp.function_task:
+            code = test_function_task(src, Path(wd), comp, style_rep, args)
+        else:
+            code = test_io_task(src, Path(wd), comp, style_rep, task_dir, cx_spec, outdir, args)
+    sys.exit(code)
+
+
+def test_function_task(src: Path, wd: Path, comp: Compiled, style_rep, args) -> int:
+    fr = None
+    if not args.only_style and not args.only_complexity:
+        fr = run_function_tests(src, wd, args)
+        print(c("   (vzorova data, generovane vstupy a odhad slozitosti se u ulohy s funkci nedelaji - "
+                "program necte standardni vstup)", "2"))
+    elif args.only_complexity:
+        print(c("\n   Odhad slozitosti umi jen ulohy, ktere ctou standardni vstup.", "2"))
+
+    print(c("\n== Shrnuti", "1"))
+    for msg in comp.problems:
+        print(f"   {badge(FAIL)} {msg}")
+    if fr is not None:
+        stat = (f"{fr.passed}/{fr.total} proslo" if fr.total is not None
+                else f"main() nedobehl, {fr.failed} selhalo" if fr.failed else "main() nedobehl")
+        print(f"   {badge(fr.level)} Asserty ze zadani: {stat}"
+              + (f"; chyba v: {', '.join(fr.broken)}" if fr.broken else ""))
+    if style_rep:
+        print(f"   Stabni kultura kodu: znamka {style_rep.grade}"
+              + (f", {len(style_rep.bugs)} pravdepodobnych chyb ze staticke analyzy" if style_rep.bugs else ""))
+    return 1 if comp.problems or (fr and fr.level == FAIL) else 0
+
+
+def test_io_task(src: Path, wd: Path, comp: Compiled, style_rep, task_dir: Path, cx_spec, outdir: Path,
+                 args) -> int:
     samples = gen.load_samples(task_dir, args.lang)
     if not samples:
-        print(c(f"Varovani: v {task_dir} nejsou zadna vzorova data (sample/**/*_in.txt).", "33"))
+        print(c(f"\nVarovani: v {task_dir} nejsou zadna vzorova data (sample/**/*_in.txt).", "33"))
     oracle = Oracle.from_outputs([s.expected for s in samples])
     if args.suite:
         samples = [s for s in samples if s.suite in args.suite]
@@ -351,31 +536,24 @@ def main():
     cases = [] if args.only_complexity or args.only_style else samples if args.only_samples else samples + gen.generate(
         samples, args.fuzz, args.seed, not args.no_big)
 
-    outdir = TESTER_DIR / "vysledky" / task_dir.name
-    shutil.rmtree(outdir, ignore_errors=True)
-    outdir.mkdir(parents=True)
-
-    grades, style_rep = [], None
-    with tempfile.TemporaryDirectory(prefix="progtest_") as wd:
-        rel_bin, san_bin, dbg_bin = compile_all(src, Path(wd), args)
-        if not args.no_style and not args.only_complexity:
-            style_rep = run_style(src, args)
-        ref_bin = Path(args.ref).resolve() if args.ref else None
-        vg_set = pick_valgrind(cases, args.valgrind, args.seed) if dbg_bin else set()
-        if cases:
-            tools = ["s ASan/UBSan" if san_bin else "bez sanitizeru"]
-            if vg_set:
-                tools.append(f"{len(vg_set)} pod valgrindem")
-            print(c(f"\n== Testovani: {len(cases)} vstupu ({', '.join(tools)}, limit {args.timeout:g} s)", "1"))
-            with ThreadPoolExecutor(args.jobs) as ex:
-                results = list(ex.map(
-                    lambda ik: run_case(ik[1], rel_bin, san_bin, dbg_bin if ik[0] in vg_set else None,
-                                        ref_bin, oracle, args), enumerate(cases)))
-        else:
-            results = []
-        report_groups(results, outdir, args)
-        if not args.no_complexity and not args.only_samples and not args.only_style:
-            grades = run_complexity(rel_bin, samples, cx_spec, args, outdir)
+    grades = []
+    rel_bin, san_bin, dbg_bin = comp.rel, comp.san, comp.dbg
+    ref_bin = Path(args.ref).resolve() if args.ref else None
+    vg_set = pick_valgrind(cases, args.valgrind, args.seed) if dbg_bin else set()
+    if cases:
+        tools = ["s ASan/UBSan" if san_bin else "bez sanitizeru"]
+        if vg_set:
+            tools.append(f"{len(vg_set)} pod valgrindem")
+        print(c(f"\n== Testovani: {len(cases)} vstupu ({', '.join(tools)}, limit {args.timeout:g} s)", "1"))
+        with ThreadPoolExecutor(args.jobs) as ex:
+            results = list(ex.map(
+                lambda ik: run_case(ik[1], rel_bin, san_bin, dbg_bin if ik[0] in vg_set else None,
+                                    ref_bin, oracle, args), enumerate(cases)))
+    else:
+        results = []
+    report_groups(results, outdir, args)
+    if not args.no_complexity and not args.only_samples and not args.only_style:
+        grades = run_complexity(rel_bin, samples, cx_spec, args, outdir)
 
     totals = {lv: sum(v.level == lv for _, _, v in results) for lv in ("OK", WARN, FAIL)}
     print(c("\n== Shrnuti", "1"))
@@ -393,8 +571,12 @@ def main():
         print(f"   Odhad slozitosti: znamka {max(grades)}"
               + (f" (nejhorsi z {len(grades)} zmerenych zpusobu zvetseni vstupu)" if len(grades) > 1 else ""))
     if totals[FAIL] + totals[WARN]:
-        print(f"   Problemove vstupy ulozeny v {outdir.relative_to(TESTER_DIR.parent)}/")
-    sys.exit(1 if totals[FAIL] else 0)
+        try:
+            shown = outdir.relative_to(TESTER_DIR.parent)
+        except ValueError:
+            shown = outdir
+        print(f"   Problemove vstupy ulozeny v {shown}/")
+    return 1 if totals[FAIL] else 0
 
 
 def report_groups(results, outdir: Path, args):

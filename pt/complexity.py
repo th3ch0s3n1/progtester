@@ -55,6 +55,7 @@ N_LIMIT = 2 ** 40
 MAX_TOKENS = 12            # kolik cisel na radku zkouset
 PER_SHAPE = 3              # v kolika vzorech zkouset radek stejneho tvaru
 JUMP = 10                  # cas skoci aspon 10x -> podezrely skok (preteceni, nekonecna smycka)
+TAIL_TOL = 0.4             # o kolik smi model minout cas u dvou nejvetsich n (relativne)
 
 
 def norm_class(s: str | None) -> str | None:
@@ -378,8 +379,15 @@ def fit(points: list[Point]) -> Fit | None:
         r = _fit_model(ns, ts, cls)
         if r:
             res[cls] = r
-    err = min(r[0] for r in res.values())
-    ok = [k for k in CLASSES if k in res and res[k][0] <= err * 1.3 + 0.02]
+    # model musi sedet i na nejvetsich n - tam je signal; jinak by jednodussi model "vyhral" na
+    # bodech, kde je cas jen startovni sum (napr. O(n) na datech, kde 4x vetsi n trva 15x dyl)
+    def tail_ok(cls):
+        _, c, a = res[cls]
+        return all(abs(c + a * _F[cls](n) - t) <= TAIL_TOL * t for n, t in zip(ns[-2:], ts[-2:]))
+
+    good = {k: r for k, r in res.items() if tail_ok(k)} or res
+    err = min(r[0] for r in good.values())
+    ok = [k for k in CLASSES if k in good and good[k][0] <= err * 1.3 + 0.02]
     best = ok[0]  # z modelu, ktere sedi skoro stejne dobre, ten nejjednodussi
     alts = [k for k in ok if CLASSES.index(k) == CLASSES.index(best) + 1]
     return Fit(best, alts, c=res[best][1], a=res[best][2], exponent=_exponent(points))

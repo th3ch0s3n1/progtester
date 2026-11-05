@@ -30,12 +30,14 @@ python3 progtester/progtest.py 01_uloha --only-complexity  # jen odhad složitos
 - [Instalace](#-instalace)
 - [Co dělá](#-co-dělá)
 - [Co se kontroluje u vstupů bez známého výstupu](#-co-se-kontroluje-u-vstupů-bez-známého-výstupu)
+- [Úlohy „napište funkci“](#-úlohy-napište-funkci)
 - [Štábní kultura kódu](#-štábní-kultura-kódu)
 - [Valgrind](#-valgrind)
 - [Odhad složitosti](#-odhad-složitosti)
 - [Vlastní testy](#-vlastní-testy)
 - [Výsledky](#-výsledky)
 - [Přepínače](#%EF%B8%8F-přepínače)
+- [Testy testeru](#-testy-testeru)
 
 ## 📦 Instalace
 
@@ -92,6 +94,8 @@ Jen vybrané sady: `--suite basic` (lze opakovat). Soubory `*_out_win.txt` (konc
    - `--strict` přidá `-Werror`.
    - Progtest překládá i C kód jako C++ – např. `int *p = malloc(...)` bez přetypování tu neprojde. `--cc gcc` přeloží soubor `.c` jako C (`gcc -std=c11`).
    - Kontrola zakázaných funkcí (`system`, `fork`, `exec*`, …) – s nimi Progtest program nespustí.
+   - Když program s `-D__PROGTEST__` nemá `main()` a ten je jen v `#ifndef __PROGTEST__`, jde o
+     [úlohu „napište funkci“](#-úlohy-napište-funkci) – testuje se pak jinak.
    - Druhý build s `-O0 -fsanitize=address,undefined` hledá paměťové chyby.
    - S `--valgrind` třetí build `-O0 -g` pro [valgrind](#-valgrind).
    - [Štábní kultura kódu](#-štábní-kultura-kódu) – délka a složitost funkcí, globální proměnné, cppcheck, clang-tidy, … se známkou.
@@ -129,6 +133,64 @@ Jen vybrané sady: `--suite basic` (lze opakovat). Soubory `*_out_win.txt` (konc
 > Která chybová hláška patří ke kterému vstupu, tester **nerozhoduje** – to by už bylo řešení.
 > Pokud máte referenční binárku (např. vlastní dříve přijaté řešení), použijte `--ref ./binarka`
 > a všechny výstupy se s ní porovnají přesně.
+
+## 🧷 Úlohy „napište funkci“
+
+U části úloh se neodevzdává celý program, jen funkce. Šablona ze zadání vypadá takhle:
+
+```c
+#ifndef __PROGTEST__
+#include <stdio.h>
+#include <assert.h>
+#endif /* __PROGTEST__ */
+
+int dateToIndex(int day, int month, int year, int *idx) { /* vaše řešení */ }
+
+#ifndef __PROGTEST__
+int main(void)
+{
+    int idx;
+    assert(dateToIndex(1, 1, 2000, &idx) == 1 && idx == 1);
+    ...
+}
+#endif /* __PROGTEST__ */
+```
+
+Tester takovou úlohu pozná sám (s `-D__PROGTEST__` v programu není `main()`) a místo vzorových dat:
+
+1. **Přeloží kód tak jako Progtest** – s `-D__PROGTEST__` a s hlavičkami z bloků `#ifndef __PROGTEST__`
+   (ty Progtest dodává sám). Navíc zkontroluje, že kód nepoužívá funkci, která je definovaná jen
+   v testovací části – na Progtestu by chyběla:
+   ```
+   FAIL na progtestu nebudou definovane: square(int) - jsou jen v #ifndef __PROGTEST__ ...
+   ```
+2. **Spustí testovací `main()` ze zadání** jako `-O2`, pod ASan/UBSan a pod valgrindem (pokud je
+   nainstalovaný). Používá k tomu vlastní `assert` ([pt/include/assert.h](pt/include/assert.h)), který:
+   - **neukončí program** u prvního selhání – uvidíte všechny selhané asserty najednou,
+   - **vypíše hodnoty** obou stran porovnání (u `&&` první nesplněnou část),
+   - při pádu nebo zacyklení řekne, **u kterého assertu** se to stalo.
+
+```
+== Testy z main() v #ifndef __PROGTEST__ (asserty ze zadani)
+   FAIL [-O2] selhalo 3 assertu z 10
+        r. 31: assert(absVal(-5) == 5)
+               hodnoty: -5 == 5
+        r. 37: assert(third() == 0.3)
+               hodnoty: 0.30000000000000004 == 0.3
+   FAIL [-O2] program spadl (SIGSEGV) pri assertu na r. 23
+   FAIL [ASan/UBSan] pametova chyba / nedefinovane chovani:
+        crash.c:12:17: runtime error: load of null pointer of type 'const int'
+          #0 0x.. in getItem(int const*, int) crash.c:12
+          #1 0x.. in main crash.c:23
+```
+
+Hodnoty se vypisují pro čísla, znaky, řetězce (`char *` i `std::string`), ukazatele (`NULL`)
+a všechno, co jde vypsat přes `operator<<`. Funguje to i pro C kód, protože ho `g++` překládá jako C++.
+S `--cc gcc` (překlad jako C) se asserty jen počítají, bez hodnot. Když nějaký assert nejde rozložit
+(např. přiřazení `assert(x = f())`), použije se standardní `assert`, který skončí u prvního selhání.
+
+Vzorová data, generované vstupy ani odhad složitosti se u těchto úloh nedělají – program nečte vstup.
+Štábní kultura kódu se kontroluje stejně (testovací část v `#ifndef __PROGTEST__` se nepočítá).
 
 ## 🧹 Štábní kultura kódu
 
@@ -307,5 +369,21 @@ Reprodukce: `./a.out < progtester/vysledky/01_uloha/0003_fail_in.txt`
 | `--cc g++\|gcc` | `g++` | překladač (`gcc` = překlad jako C) |
 | `--ref BIN` | | referenční binárka – přesné porovnání všech výstupů |
 | `--show N` | `3` | kolik detailů vypsat na skupinu |
+| `--out SLOŽKA` | `vysledky/<úloha>` | kam uložit problémové vstupy |
 | `-j N` | počet jader | počet paralelních úloh |
 | `--src SOUBOR` | | konkrétní zdrojový soubor, když jich je ve složce víc |
+
+## 🛠️ Testy testeru
+
+Tester má vlastní testy ve složce [tests/](tests/): unit testy (rozpoznání bloků `#ifndef __PROGTEST__`,
+fit složitosti, štábní kultura, …) a end-to-end testy, které pouští celý tester na malé programy se
+známou chybou ([tests/fixtures/](tests/fixtures/) – chyba na konci vstupu, zápis mimo pole,
+neinicializovaná proměnná, O(n²), pád v assertu, únik paměti, …).
+
+```sh
+python3 -m unittest discover -s tests            # vše (~1 min)
+PT_FAST=1 python3 -m unittest discover -s tests  # bez odhadu složitosti (~25 s)
+```
+
+Před úpravou heuristik (odhad složitosti, štábní kultura, generátor vstupů) je dobré je pustit –
+tyhle části se snadno rozbijí tiše.

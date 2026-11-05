@@ -1,0 +1,4 @@
+Zadejte cisla:
+Soucet: 10
+Soucet: 6
+Soucet: 13

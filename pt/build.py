@@ -1,6 +1,7 @@
 """Kompilace testovaneho programu (release jako progtest + sanitizer build)."""
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ FORBIDDEN = {
 C_STD = "-std=c11"
 CXX_STD = "-std=c++20"
 COMMON = ["-Wall", "-pedantic", "-D__PROGTEST__"]
+INCLUDE_DIR = Path(__file__).resolve().parent / "include"   # assert.h pro testovaci main()
+ASSERT_RT = Path(__file__).resolve().parent / "assert_rt.c"
 SANITIZE = [
     "-O0", "-g", "-fno-omit-frame-pointer",
     "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
@@ -46,9 +49,83 @@ def compile_src(src: Path, out: Path, extra: list, cc: str) -> Build:
     return Build(p.returncode == 0 and out.exists(), out, cmd, p.stderr.strip())
 
 
-def build_release(src: Path, outdir: Path, strict: bool, cc: str) -> Build:
+def compile_object(src: Path, outdir: Path, strict: bool, cc: str, include: Path | None = None) -> Build:
+    """Preklad jako na progtestu (-O2, -D__PROGTEST__), zatim jen do objektu - podle toho,
+    jestli je v nem main(), se pozna uloha se vstupem/vystupem a uloha "napis funkci".
+    `include` = hlavicky, ktere progtest dodava pred kod (u uloh s funkci)."""
+    out = outdir / ("prog_progtest.o" if include else "prog.o")
+    cc_, std = _compiler(src, cc)
     extra = ["-O2", "-Wextra"] + (["-Werror"] if strict else [])
-    return compile_src(src, outdir / "prog_release", extra, cc)
+    inc = ["-include", str(include)] if include else []
+    cmd = [cc_, std, *COMMON, *extra, *inc, "-c", src.name, "-o", str(out)]
+    p = subprocess.run(cmd, capture_output=True, text=True, cwd=src.parent)
+    return Build(p.returncode == 0 and out.exists(), out, cmd, p.stderr.strip())
+
+
+def display_cmd(b: Build) -> str:
+    """Prikaz prekladu pro vypis (bez docasnych cest)."""
+    cmd, skip = [], False
+    for a in b.cmd:
+        if skip:
+            skip = False
+            continue
+        if a in ("-o", "-include"):
+            skip = True
+            continue
+        if a != "-c":
+            cmd.append(a)
+    return " ".join(cmd) + " -o prog -lm"
+
+
+def defines_main(obj: Path) -> bool:
+    p = subprocess.run(["nm", "--defined-only", str(obj)], capture_output=True, text=True)
+    return any(ln.split()[-2:] in (["T", "main"], ["t", "main"]) for ln in p.stdout.splitlines()
+               if len(ln.split()) >= 2)
+
+
+def link(obj: Build, src: Path, cc: str) -> Build:
+    out = obj.binary.with_suffix("")
+    cc_, _ = _compiler(src, cc)
+    cmd = [cc_, str(obj.binary), "-o", str(out), "-lm"]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    return Build(p.returncode == 0 and out.exists(), out, obj.cmd, (obj.output + "\n" + p.stderr).strip())
+
+
+def missing_functions(obj: Path, src: Path, cc: str) -> list[str]:
+    """Funkce, ktere kod pouziva, ale na progtestu nebudou (definovane jen v #ifndef __PROGTEST__).
+    Zjisti se slinkovanim s prazdnym main()."""
+    cc_, std = _compiler(src, cc)
+    stub = obj.parent / "pt_stub_main.c"
+    stub.write_text("int main(void) { return 0; }\n")
+    lang = ["-x", "c++"] if cc_ == "g++" else []
+    out = obj.parent / "pt_stub"
+    p = subprocess.run([cc_, std, *lang, str(stub), "-x", "none", str(obj), "-o", str(out), "-lm"],
+                       capture_output=True, text=True)
+    if p.returncode == 0:
+        return []
+    names = re.findall(r"undefined reference to [`']([^']+)'", p.stderr)
+    return sorted(set(names)) or [p.stderr.strip()[:300]]
+
+
+def build_test(src: Path, outdir: Path, kind: str, cc: str, smart: bool = True) -> Build:
+    """Testovaci main() ze zadani: bez -D__PROGTEST__. `smart` = s assertem z pt/include,
+    ktery pokracuje po selhani a vypisuje hodnoty (prilinkuje se k nemu pt/assert_rt.c)."""
+    flags = {"release": ["-O2"], "asan": SANITIZE, "debug": ["-O0", "-g"]}[kind]
+    out = outdir / f"test_{kind}{'' if smart else '_plain'}"
+    cc_, std = _compiler(src, cc)
+    extra = []
+    if smart:
+        rt = outdir / "pt_assert_rt.o"
+        if not rt.exists():
+            r = subprocess.run(["gcc", "-std=c11", "-O2", "-c", str(ASSERT_RT), "-o", str(rt)],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                return Build(False, out, [], r.stderr.strip())
+        extra = ["-I", str(INCLUDE_DIR)]
+    # varovani tu nevypisujeme - kod reseni uz prosel prekladem jako na progtestu
+    cmd = [cc_, std, "-w", *flags, *extra, src.name, *([str(rt)] if smart else []), "-o", str(out), "-lm"]
+    p = subprocess.run(cmd, capture_output=True, text=True, cwd=src.parent)
+    return Build(p.returncode == 0 and out.exists(), out, cmd, p.stderr.strip())
 
 
 def build_sanitized(src: Path, outdir: Path, cc: str) -> Build:

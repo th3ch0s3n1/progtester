@@ -30,12 +30,14 @@ python3 progtester/progtest.py 01_task --only-complexity  # complexity estimate 
 - [Installation](#-installation)
 - [What it does](#-what-it-does)
 - [What is checked for inputs without a known output](#-what-is-checked-for-inputs-without-a-known-output)
+- ["Write a function" tasks](#-write-a-function-tasks)
 - [Code style](#-code-style)
 - [Valgrind](#-valgrind)
 - [Complexity estimate](#-complexity-estimate)
 - [Custom tests](#-custom-tests)
 - [Results](#-results)
 - [Options](#%EF%B8%8F-options)
+- [Tester's own tests](#%EF%B8%8F-testers-own-tests)
 
 ## 📦 Installation
 
@@ -92,6 +94,8 @@ Selected suites only: `--suite basic` (repeatable). `*_out_win.txt` files (Windo
    - `--strict` adds `-Werror`.
    - Progtest compiles C code as C++ too – e.g. `int *p = malloc(...)` without a cast fails here as well. `--cc gcc` compiles a `.c` file as C (`gcc -std=c11`).
    - Checks for forbidden functions (`system`, `fork`, `exec*`, …) – Progtest refuses to run programs that use them.
+   - If the program has no `main()` with `-D__PROGTEST__` and there is one inside `#ifndef __PROGTEST__`,
+     it is a ["write a function" task](#-write-a-function-tasks) and is tested differently.
    - A second build with `-O0 -fsanitize=address,undefined` hunts for memory errors.
    - With `--valgrind`, a third `-O0 -g` build for [valgrind](#-valgrind).
    - [Code style](#-code-style) – function length and complexity, global variables, cppcheck, clang-tidy, … with a grade.
@@ -129,6 +133,64 @@ Selected suites only: `--suite basic` (repeatable). `*_out_win.txt` files (Windo
 > The tester **does not decide** which error message belongs to which input – that would amount to solving the task.
 > If you have a reference binary (e.g. your own previously accepted solution), use `--ref ./binary`
 > and every output will be compared against it exactly.
+
+## 🧷 "Write a function" tasks
+
+In some tasks you submit only functions, not a whole program. The template from the assignment looks like this:
+
+```c
+#ifndef __PROGTEST__
+#include <stdio.h>
+#include <assert.h>
+#endif /* __PROGTEST__ */
+
+int dateToIndex(int day, int month, int year, int *idx) { /* your solution */ }
+
+#ifndef __PROGTEST__
+int main(void)
+{
+    int idx;
+    assert(dateToIndex(1, 1, 2000, &idx) == 1 && idx == 1);
+    ...
+}
+#endif /* __PROGTEST__ */
+```
+
+The tester detects such a task on its own (there is no `main()` with `-D__PROGTEST__`) and instead of sample data:
+
+1. **Compiles the code the way Progtest does** – with `-D__PROGTEST__` and with the headers from the
+   `#ifndef __PROGTEST__` blocks (Progtest supplies those itself). It also checks that the code does not
+   use a function defined only in the test part – it would be missing on Progtest:
+   ```
+   FAIL na progtestu nebudou definovane: square(int) - jsou jen v #ifndef __PROGTEST__ ...
+   ```
+2. **Runs the test `main()` from the assignment** as `-O2`, under ASan/UBSan and under valgrind (if
+   installed). It uses its own `assert` ([pt/include/assert.h](pt/include/assert.h)) that:
+   - **does not stop the program** at the first failure – you see all failed asserts at once,
+   - **prints the values** of both sides of a comparison (for `&&`, the first false part),
+   - on a crash or an infinite loop tells you **which assert** it happened in.
+
+```
+== Testy z main() v #ifndef __PROGTEST__ (asserty ze zadani)
+   FAIL [-O2] selhalo 3 assertu z 10
+        r. 31: assert(absVal(-5) == 5)
+               hodnoty: -5 == 5
+        r. 37: assert(third() == 0.3)
+               hodnoty: 0.30000000000000004 == 0.3
+   FAIL [-O2] program spadl (SIGSEGV) pri assertu na r. 23
+   FAIL [ASan/UBSan] pametova chyba / nedefinovane chovani:
+        crash.c:12:17: runtime error: load of null pointer of type 'const int'
+          #0 0x.. in getItem(int const*, int) crash.c:12
+          #1 0x.. in main crash.c:23
+```
+
+Values are shown for numbers, characters, strings (`char *` and `std::string`), pointers (`NULL`) and
+anything printable with `operator<<`. It works for C code too, because `g++` compiles it as C++.
+With `--cc gcc` (compiled as C) asserts are only counted, without values. When an assert cannot be
+decomposed (e.g. an assignment `assert(x = f())`), the standard `assert` is used, which stops at the first failure.
+
+Sample data, generated inputs and the complexity estimate are skipped for these tasks – the program reads no input.
+Code style is checked the same way (the test part in `#ifndef __PROGTEST__` is not counted).
 
 ## 🧹 Code style
 
@@ -305,5 +367,21 @@ Reproduce with: `./a.out < progtester/vysledky/01_task/0003_fail_in.txt`
 | `--cc g++\|gcc` | `g++` | compiler (`gcc` = compile as C) |
 | `--ref BIN` | | reference binary – exact comparison of all outputs |
 | `--show N` | `3` | how many details to print per group |
+| `--out DIR` | `vysledky/<task>` | where to save problematic inputs |
 | `-j N` | CPU count | number of parallel jobs |
 | `--src FILE` | | a specific source file when the folder has several |
+
+## 🛠️ Tester's own tests
+
+The tester has its own tests in [tests/](tests/): unit tests (detecting `#ifndef __PROGTEST__` blocks,
+complexity fitting, code style, …) and end-to-end tests that run the whole tester on small programs with
+a known bug ([tests/fixtures/](tests/fixtures/) – error at end of input, out-of-bounds write,
+uninitialized variable, O(n²), crash inside an assert, memory leak, …).
+
+```sh
+python3 -m unittest discover -s tests            # everything (~1 min)
+PT_FAST=1 python3 -m unittest discover -s tests  # without the complexity estimate (~25 s)
+```
+
+Run them before changing the heuristics (complexity estimate, code style, input generator) –
+those parts break silently easily.

@@ -1,0 +1,8 @@
+Zadejte cisla:
+Soucet: 1
+Soucet: 3
+Soucet: 6
+Soucet: 10
+Soucet: 15
+Soucet: 21
+Soucet: 28

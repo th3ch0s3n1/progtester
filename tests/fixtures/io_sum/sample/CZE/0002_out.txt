@@ -1,0 +1,3 @@
+Zadejte cisla:
+Soucet: 5
+Nespravny vstup.
