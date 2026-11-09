@@ -1,6 +1,6 @@
 <div align="center">
 
-# progtester
+# 🧪 progtester
 
 **A local Progtest simulator that tries to break your program.**
 
