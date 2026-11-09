@@ -1,6 +1,6 @@
 <div align="center">
 
-# progtester
+# 🧪 progtester
 
 **Lokální simulátor Progtestu, který se snaží váš program rozbít.**
 
